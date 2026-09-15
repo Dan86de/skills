@@ -51,7 +51,11 @@ Change them there first, then propagate.
 Run `claude plugin validate . --strict` after touching either.
 
 Versioning is changesets.
-Add a changeset for any user-visible change, and never hand-edit `CHANGELOG.md` or the `version` field in `plugin.json`.
+Add one with `pnpm changeset` for any user-visible change, and never hand-edit `CHANGELOG.md` or the `version` field in `plugin.json`.
+
+The package manager is pnpm.
+`pnpm-lock.yaml` is committed, and CI installs with `--frozen-lockfile`.
+The `npx skills@latest` commands in the install block stay as `npx`: those are for consumers, who will not have this repo's pnpm pin.
 
 ## Prose
 
