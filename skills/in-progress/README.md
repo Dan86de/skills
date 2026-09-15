@@ -9,3 +9,4 @@ Promoting one: `git mv` it into `engineering/` or `productivity/`, add it to tha
 
 - [interview](./interview/SKILL.md) - settle every decision behind a plan before it gets built, in rounds, ending in a decision record.
 - [write-spec](./write-spec/SKILL.md) - turn a settled plan or decision record into a grounded spec, one document, written to `.scratch/specs`.
+- [write-slices](./write-slices/SKILL.md) - decompose a spec from `write-spec` into vertical slices with blocking edges and per-slice autonomy, one JSON file written to `.scratch/slices`.

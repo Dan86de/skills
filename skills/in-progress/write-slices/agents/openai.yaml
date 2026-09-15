@@ -1,0 +1,6 @@
+interface:
+  display_name: "Write Slices"
+  short_description: "Decompose a written spec into vertical slices"
+
+policy:
+  allow_implicit_invocation: false
