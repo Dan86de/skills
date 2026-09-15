@@ -1,0 +1,14 @@
+{
+  "name": "dan86de-skills",
+  "version": "0.0.0",
+  "description": "Daniel Noworyta's agent skills.",
+  "author": {
+    "name": "Daniel Noworyta",
+    "url": "https://github.com/Dan86de"
+  },
+  "homepage": "https://github.com/Dan86de/skills",
+  "repository": "https://github.com/Dan86de/skills",
+  "license": "MIT",
+  "keywords": ["engineering", "skills", "productivity"],
+  "skills": []
+}

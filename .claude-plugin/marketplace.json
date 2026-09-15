@@ -1,0 +1,17 @@
+{
+  "name": "dan86de",
+  "owner": {
+    "name": "Daniel Noworyta",
+    "url": "https://github.com/Dan86de"
+  },
+  "description": "Daniel Noworyta's agent skills, as an installable Claude Code plugin.",
+  "plugins": [
+    {
+      "name": "dan86de-skills",
+      "source": "./",
+      "description": "Daniel Noworyta's agent skills.",
+      "category": "engineering",
+      "keywords": ["engineering", "skills", "productivity"]
+    }
+  ]
+}
