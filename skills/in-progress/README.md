@@ -7,4 +7,5 @@ Public on purpose, feedback wanted, not shipped in the Claude Code plugin and no
 
 Promoting one: `git mv` it into `engineering/` or `productivity/`, add it to that bucket's `README.md`, the top-level `README.md`, and `.claude-plugin/plugin.json`.
 
-_Nothing here yet._
+- [interview](./interview/SKILL.md) - settle every decision behind a plan before it gets built, in rounds, ending in a decision record.
+- [write-spec](./write-spec/SKILL.md) - turn a settled plan or decision record into a grounded spec, one document, written to `.scratch/specs`.
