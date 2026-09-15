@@ -43,10 +43,16 @@ A skill is user-invoked in both harnesses or in neither.
 
 ## agents/openai.yaml
 
-Every skill carries one.
-It holds Codex's picker metadata, and for user-invoked skills the policy flag that pairs with `disable-model-invocation`.
+Codex reads this file.
+Everything in it is optional, including the file itself: without it a skill still loads, with no UI customisation, implicit invocation on, and no declared dependencies.
 
-Model-invoked:
+The house rule here is that every skill carries one anyway, so the Codex side is never the thing that got forgotten.
+
+Three blocks, and they are not equally important.
+
+**`interface`** is cosmetic.
+It customises how the skill presents **in the ChatGPT desktop app** and nowhere else.
+`short_description` is specced at 25 to 64 characters.
 
 ```yaml
 interface:
@@ -54,12 +60,32 @@ interface:
   short_description: "What it does, in a few words"
 ```
 
-User-invoked adds:
+Also available: `icon_small`, `icon_large` (paths relative to the skill dir, keep assets in `assets/`), `brand_color`, and `default_prompt`.
+
+**`policy`** is functional, and this is the one that matters.
+`allow_implicit_invocation` defaults to `true`.
+Set it to `false` on user-invoked skills, and Codex will not fire the skill off a user prompt, though explicit invocation still works.
+This is the Codex half of `disable-model-invocation: true`.
 
 ```yaml
 policy:
   allow_implicit_invocation: false
 ```
+
+**`dependencies`** declares what the skill needs to work, so a missing MCP server surfaces as a dependency rather than as confusing failure mid-skill.
+Only `type: "mcp"` is supported.
+
+```yaml
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "github"
+      description: "GitHub MCP server"
+      transport: "streamable_http"
+      url: "https://api.githubcopilot.com/mcp/"
+```
+
+Reference: [OpenAI's skill docs](https://learn.chatgpt.com/docs/build-skills.md).
 
 ## Calling one skill from another
 
