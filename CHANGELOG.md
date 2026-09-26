@@ -1,5 +1,12 @@
 # dan86de-skills
 
+## 0.3.0
+
+### Minor Changes
+
+- [`dc7539e`](https://github.com/Dan86de/skills/commit/dc7539e154ec00f74ef53e5a609252c02a5b7896) Thanks [@Dan86de](https://github.com/Dan86de)! - `write-spec` and `write-slices` recognise a project's verification skill.
+  Where a project has one, `write-spec` lists the checks it can run under Automated as verify steps, and `write-slices` puts them in `done.automated`, so a slice is `hitl` only for human judgement or an action an agent cannot perform.
+
 ## 0.2.0
 
 ### Minor Changes
