@@ -35,7 +35,7 @@ Those numbers are the only way a slice will ever refer to a behaviour, so note t
 ## Step 2: Check the seams and stamp the commit
 
 The spec was written against a codebase that may have moved.
-This is the one place this skill reads the code, and it reads only to confirm what the spec cites.
+This is the one place this skill reads the code, and it reads only to confirm what the spec cites and to find a verification skill (Step 3).
 
 For every `file:line` in the Seams section, check that the file exists in the working tree.
 A seam the spec marks as new has no `file:line` yet.
@@ -90,6 +90,12 @@ A slice is `hitl` when its `done.manual` list is non-empty, or when the slice ne
 Otherwise it is `afk`.
 Never set it by judgement.
 "Feels risky" is not a trigger, because a flag a runner cannot trust is ignored after its first wrong call.
+
+**When the project has a verification skill**, a check that skill can run is automated.
+A verification skill is a project skill, in `.agents/skills/` or a harness's own skills folder, whose `SKILL.md` says it runs the product and records whether a check passed; look for one when you check the seams, and read its `SKILL.md` for what it can drive and read.
+Its checks go in `done.automated`, written as verify steps the way the spec's Automated list writes them, even where an older spec left them under Manual.
+`done.manual` then holds only human judgement, such as whether something looks or reads right, so a slice is `hitl` for that or for an action an agent cannot perform, and never only because somebody has to click through the product.
+This is still the mechanical rule above, applied to lists that are sorted correctly, not a judgement call about the slice.
 
 `autonomy` says nothing about blocking and `blocked_by` says nothing about autonomy.
 Keep them orthogonal.
@@ -189,7 +195,7 @@ After writing, read the file back and walk every rule below against it.
 3. **Kind.** Every `kind` is one of the five. Only non-feature kinds carry `scope`.
 4. **Edges.** Every id in a `blocked_by` list exists in the file, no slice blocks itself, and the graph has no cycles.
 5. **Connectivity.** A slice claiming zero behaviours is connected through `blocked_by`, in either direction, to a slice claiming at least one.
-6. **Autonomy.** `hitl` exactly when `done.manual` is non-empty or the slice needs an action an agent cannot perform, `afk` otherwise.
+6. **Autonomy.** `hitl` exactly when `done.manual` is non-empty or the slice needs an action an agent cannot perform, `afk` otherwise. With a verification skill, no `done.manual` item is a check that skill can run.
 
 Report every violation, one per line, in the form `S3: claims behaviour 4, already claimed by S2`.
 Fix them, rewrite the file, and walk the rules again.

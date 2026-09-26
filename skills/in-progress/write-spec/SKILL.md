@@ -128,6 +128,13 @@ An empty section means you have not looked.
 
 </spec-template>
 
+**When the project has a verification skill**, Done means splits differently.
+A verification skill is a project skill, in `.agents/skills/` or a harness's own skills folder, whose `SKILL.md` says it runs the product and records whether a check passed.
+Look for one while grounding, and if there is one, read its `SKILL.md` for what it can drive and read.
+Every check it can run goes under **Automated**, written as the steps an agent would take with it, such as "verify: submit the signup form, the dashboard greets the new account, and one `accounts` row exists".
+**Manual** then keeps only what needs a person: judging how something looks or reads, or an action no agent can perform.
+A project without one keeps the split above, because there a check against the running product has nobody to run it but a person.
+
 One rule governs the whole document.
 **Facts about today carry citations. Decisions about tomorrow carry none.**
 Current state and Seams cite `file:line`.
