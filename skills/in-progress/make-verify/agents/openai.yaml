@@ -1,0 +1,6 @@
+interface:
+  display_name: "Make Verify"
+  short_description: "Generate this project's verify skill"
+
+policy:
+  allow_implicit_invocation: false
