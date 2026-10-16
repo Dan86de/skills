@@ -114,5 +114,6 @@ A skill that was never run is a draft.
 - the surfaces, and which one the skill drives
 - the isolation case, and why
 - every file written or edited
+- the branch and commit they are on, if any, and that they must reach the default branch before implement-slice runs, because slice branches start there
 - the run folder of the proving run, and its verdict
 - what the skill cannot drive yet
