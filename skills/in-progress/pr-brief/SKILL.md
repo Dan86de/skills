@@ -1,9 +1,9 @@
 ---
-name: pr
+name: pr-brief
 description: Write a branch's PR body so a reviewer can tell at a glance how much attention it needs, with a visual summary, harvested evidence, and a one-way or two-way door call made in a fresh context, then put the body and an attention label on the branch's existing PR. Use when a branch is ready for review, when the user says "write the PR body", "update the PR description", "how risky is this PR", or "is this ready to merge", and when another skill closes a branch and needs its PR described.
 ---
 
-# PR
+# PR Brief
 
 Write the PR body that tells the reviewer where to spend attention.
 
