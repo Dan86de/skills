@@ -1,5 +1,14 @@
 # dan86de-skills
 
+## 0.7.0
+
+### Minor Changes
+
+- [#10](https://github.com/Dan86de/skills/pull/10) [`32c5eb3`](https://github.com/Dan86de/skills/commit/32c5eb32bdc626dfd8085699a88b55dbf785b23a) Thanks [@Dan86de](https://github.com/Dan86de)! - Add the `pr` skill to `in-progress/`.
+  It writes a branch's PR body as an attention call, a visual summary, harvested evidence and a Merge Danger section, with the one-way or two-way door judged by a fresh-context subagent against a built-in baseline plus a repo's own `## One-way doors` rules.
+  It updates the branch's existing PR body and sets one `attention: read`, `attention: spot-check` or `attention: skim` label, keeps everything it does not own in a collapsed build log, and never pushes, opens, merges or marks a PR ready.
+  `implement-slice` now calls it when it closes a branch, before marking the PR ready.
+
 ## 0.6.0
 
 ### Minor Changes
