@@ -46,6 +46,9 @@ If it does not, create it from the up-to-date default branch.
 The slices file's `commit` must be an ancestor of `HEAD`.
 If it is not, stop: the decomposition was made against a history this branch does not contain.
 
+The verify skill from Step 2 must still exist on this branch.
+If it does not, stop: it was committed somewhere the default branch has not caught up with yet, and the user lands that commit on the default branch before any slice starts.
+
 ## Step 4: Read progress and pick the slice
 
 Read the trailers of every commit between the default branch and `HEAD`:
