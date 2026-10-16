@@ -1,0 +1,6 @@
+interface:
+  display_name: "Retro"
+  short_description: "Turn recurring review feedback into standards"
+
+policy:
+  allow_implicit_invocation: false
