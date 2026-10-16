@@ -211,7 +211,7 @@ Fix every `blocks` finding and every spec gap, pass the gate once more for every
 Push it.
 Append that review block to the PR body under a `## Branch review` heading.
 
-Then call the Skill tool with "pr", so the PR opens with an attention call, a summary, the evidence and the merge danger, and gets its `attention:` label.
+Then call the Skill tool with "pr-brief", so the PR opens with an attention call, a summary, the evidence and the merge danger, and gets its `attention:` label.
 It keeps the slice list, `## Slices` and `## Branch review` in a collapsed build log, and reads them as its evidence and findings.
 Then mark the PR ready for review.
 

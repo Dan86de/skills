@@ -1,16 +1,16 @@
 ---
-name: retro
+name: codify
 description: Turn review feedback that keeps coming back into standards entries, one-way doors and checker rules, proposed for your approval and written only once you approve.
 disable-model-invocation: true
 ---
 
-# Retro
+# Codify
 
 Never write the same review comment twice.
 
 A review comment fixes one PR.
 The same comment on the next PR means the lesson lived only in a reviewer's head.
-This skill moves recurring lessons to where the next review finds them on its own: the standards file the review-change skill reads, the `## One-way doors` section the pr skill reads, and the checker configs the project already runs.
+This skill moves recurring lessons to where the next review finds them on its own: the standards file the review-change skill reads, the `## One-way doors` section the pr-brief skill reads, and the checker configs the project already runs.
 
 It proposes, the user approves, and only then does it write.
 It never stages, commits, branches, opens a PR, or comments on one.
@@ -25,13 +25,13 @@ It never stages, commits, branches, opens a PR, or comments on one.
 Never `CONTRIBUTING.md`: it is written for people, and review-change reads it last.
 
 **The window** is the PRs this run reads.
-It takes at most one argument, and with none it uses the last retro:
+It takes at most one argument, and with none it uses the last codify run:
 
 - a PR number: that PR alone, merged or not
 - `--since <YYYY-MM-DD>`: every PR merged on or after that date
-- nothing: every PR merged after the **last retro**, the newest commit on the default branch whose subject starts with `Retro`
-  Find it with `git log --format='%H %cI %s' <default-branch>`, keeping the first line whose subject starts with `Retro`, and keep PRs whose `mergedAt` is later than its commit date.
-  No such line means there is no last retro: take the 10 most recently merged PRs, by `mergedAt`, instead.
+- nothing: every PR merged after the **last codify run**, the newest commit on the default branch whose subject starts with `Codify`
+  Find it with `git log --format='%H %cI %s' <default-branch>`, keeping the first line whose subject starts with `Codify`, and keep PRs whose `mergedAt` is later than its commit date.
+  No such line means there is no last codify run: take the 10 most recently merged PRs, by `mergedAt`, instead.
 
 If the user passes both a PR number and `--since`, stop and ask which one they meant.
 
@@ -41,7 +41,7 @@ If there is no GitHub CLI, no GitHub remote, or the window is empty, say so and 
 
 ## Step 2: Ask the user
 
-Show how the window was chosen (the PR given, since a date, since the last retro at a SHA, or the last 10 merged) and list its PRs, number and title, at most 20, then `and <n> more`.
+Show how the window was chosen (the PR given, since a date, since the last codify run at a SHA, or the last 10 merged) and list its PRs, number and title, at most 20, then `and <n> more`.
 Then ask exactly this, and wait for the answer:
 
 > Which review comments did you catch yourself making, in these PRs or anywhere lately?
@@ -129,7 +129,7 @@ Above 40, every new standard comes with a proposed **cut** or merge of an existi
 Show the proposal in the conversation, in this shape:
 
 ```text
-Retro: <how the window was chosen>, PRs <#a, #b, ...> (<n> PRs) | your input: <n comments | none>
+Codify: <how the window was chosen>, PRs <#a, #b, ...> (<n> PRs) | your input: <n comments | none>
 Target: <path> (<exists, n rules | will be created>)
 
 Proposed:
@@ -172,7 +172,7 @@ A target that does not exist is created with this skeleton, then filled:
 ```markdown
 # Coding standards
 
-Read by the review-change skill on every review, and by the pr skill for `## One-way doors`.
+Read by the review-change skill on every review, and by the pr-brief skill for `## One-way doors`.
 Each entry is a rule and why it exists, with the PRs or the statement it came from.
 
 ## Rules
@@ -187,7 +187,7 @@ Every standard and one-way door entry is exactly two lines:
   Why: <one sentence> (<sources>).
 ```
 
-The bold name is how review-change and pr cite the rule, so keep it short and unique within the file.
+The bold name is how review-change and pr-brief cite the rule, so keep it short and unique within the file.
 No examples longer than one line, and no sub-bullets.
 Append new entries to the end of their section; a sharpen replaces its entry in place, and a cut deletes it.
 
@@ -200,7 +200,7 @@ If it fails on code this run did not write, leave the config change in place and
 - the check result, or `not run: no config change`
 - the follow-ups and the watching list, unchanged from Step 6
 - that the user's input was empty, if it was
-- a commit message to use: `Retro: <#a, #b, ...>`, and that the next run starts after this commit only if it lands on the default branch with that subject
+- a commit message to use: `Codify: <#a, #b, ...>`, and that the next run starts after this commit only if it lands on the default branch with that subject
 - that the target is gitignored, if `git check-ignore <target>` says it is, because then review-change in a fresh clone will not find it
 
 ## Rules that do not bend

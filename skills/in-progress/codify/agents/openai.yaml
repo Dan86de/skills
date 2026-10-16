@@ -1,5 +1,5 @@
 interface:
-  display_name: "Retro"
+  display_name: "Codify"
   short_description: "Turn recurring review feedback into standards"
 
 policy:
