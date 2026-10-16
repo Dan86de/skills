@@ -1,5 +1,12 @@
 # dan86de-skills
 
+## 0.9.1
+
+### Patch Changes
+
+- [#16](https://github.com/Dan86de/skills/pull/16) [`e4dfa4c`](https://github.com/Dan86de/skills/commit/e4dfa4c8760bf74f48a5fa2faee99f7561aedc2f) Thanks [@Dan86de](https://github.com/Dan86de)! - `make-verify` now reports the branch its files landed on and that they must reach the default branch before `implement-slice` runs.
+  `implement-slice` stops with a clear message when the verify skill is missing from the slice branch, instead of building without it.
+
 ## 0.9.0
 
 ### Minor Changes
