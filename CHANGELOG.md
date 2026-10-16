@@ -1,5 +1,13 @@
 # dan86de-skills
 
+## 0.8.0
+
+### Minor Changes
+
+- [#12](https://github.com/Dan86de/skills/pull/12) [`7e19c09`](https://github.com/Dan86de/skills/commit/7e19c0934970ad2aed1947dc5b3ce776cdae3dda) Thanks [@Dan86de](https://github.com/Dan86de)! - Add the user-invoked `retro` skill to `in-progress/`.
+  It asks which review comments you keep making, reads the merged PRs since the last retro for human comments, `Open:` review findings and `Address review` commits, and keeps only rules that you stated or that recur across two or more PRs.
+  It proposes each as an existing checker rule, a `## One-way doors` entry or a coding standard in `.agents/coding-standards.md`, plus moves of coding rules out of `AGENTS.md` and `CLAUDE.md`, and writes only what you approve, without committing.
+
 ## 0.7.0
 
 ### Minor Changes
