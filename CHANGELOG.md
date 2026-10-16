@@ -1,5 +1,14 @@
 # dan86de-skills
 
+## 0.6.0
+
+### Minor Changes
+
+- [#8](https://github.com/Dan86de/skills/pull/8) [`06b5676`](https://github.com/Dan86de/skills/commit/06b5676d5c9adb108153fba04c939c2c834394f3) Thanks [@Dan86de](https://github.com/Dan86de)! - Add the `review-change` skill to `in-progress/`.
+  It reviews a change against the repo's own coding standards, or a short language-neutral baseline of test lies and design smells, in one fresh-context subagent.
+  It applies single-file, behaviour-neutral fixes in the working tree, never commits, and reports the rest as a plain-text block with `blocks`, `judgement` and `question` findings.
+  `implement-slice` now runs it on every slice before the commit, carries its block in the commit body and the PR, and gives a `blocks` finding one fix round before the slice stops.
+
 ## 0.5.0
 
 ### Minor Changes
