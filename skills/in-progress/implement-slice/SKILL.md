@@ -133,7 +133,24 @@ When you stop, commit nothing and add no trailer.
 Leave the diff in the working tree, and report: the check or command that stopped you, each cause you tried and what it showed, and the run folders whose evidence shows it.
 Then end the turn.
 
-## Step 7: Commit and push
+## Step 7: Review it
+
+The gate proves the slice works.
+The review makes it good, in a context that did not write it.
+
+Call the Skill tool with "review-change" and the arguments `HEAD --no-check`, so it reviews exactly the uncommitted slice and leaves checking to your gate.
+Keep the block it returns: it goes into the commit.
+
+- **It applied fixes.** They are edits you did not gate. Pass the gate in Step 6 again, with a new verify run.
+- **`Open` has a `blocks` finding.** Fix every one yourself, pass the gate again, and call review-change once more.
+  This gets one round.
+  If the second review still has a `blocks` finding, stop the way Step 6 stops, and include the review block in the report.
+- **It cannot start its reviewer.** Stop the way Step 6 stops, and say the slice needs a harness that can run a subagent.
+
+`judgement` and `question` findings never stop a slice.
+They travel with the commit and the PR for the person who reviews it.
+
+## Step 8: Commit and push
 
 One commit per slice.
 The subject is the slice's title.
@@ -149,6 +166,8 @@ Verify run 20260927-103133-773664: Done
 - <test item> -> <test file>: pass
 Project checks: <each command>: pass
 
+<the review-change block, exactly as returned>
+
 Slice: S3
 ```
 
@@ -161,7 +180,7 @@ The first commit on a new branch also opens a draft PR from it to the default br
 Its title is the spec's title.
 Its body holds one line per slice, with id, title and blockers, then a `## Slices` heading.
 
-After every commit, append a section to the PR body under `## Slices`: a `### S3 - <title>` heading, the commit's short SHA, and its proof lines exactly as the commit body has them.
+After every commit, append a section to the PR body under `## Slices`: a `### S3 - <title>` heading, the commit's short SHA, and its proof lines and review block exactly as the commit body has them.
 Replace nothing that is already there.
 
 Invoking this skill permits pushing to `slices/<slug>` and editing its own PR.
@@ -179,26 +198,32 @@ Push it and append `Signed off in <short SHA>` to S4's section in the PR body.
 If they do not confirm, commit nothing.
 They fix it by running this skill on S4 again, which rebuilds it through the gate.
 
-## Step 8: Close the branch
+## Step 9: Close the branch
 
 After a commit that leaves every slice in the file done, finish the branch in the same call.
 
-Review the whole branch against the default branch, and against the spec.
-If a code-review skill is available, call the Skill tool with it; otherwise review the diff yourself.
-Fix what the review finds, pass the gate once more for every slice the fix touched, and commit with `Address review` as the subject and the proof in the body.
+The per-slice reviews each saw one slice.
+This one sees the branch, which is the only place duplication between slices shows up.
+
+Call the Skill tool with "review-change" and the default branch as the argument.
+Then check the whole branch against the spec yourself: every behaviour claimed, nothing the spec puts out of scope.
+Fix every `blocks` finding and every spec gap, pass the gate once more for every slice the fixes touched, and commit with `Address review` as the subject and the proof and review block in the body.
+Append that review block to the PR body under a `## Branch review` heading.
 Then mark the PR ready for review.
 
-## Step 9: Report
+## Step 10: Report
 
 - the slice, and whether it is done, pending sign-off or stopped
 - the commit and the PR
 - the verify run folder
+- the review's `Open` findings, one line each
 - what is ready now, and that the next slice gets a fresh conversation: the user starts it with `/implement-slice`
 
 ## Rules that do not bend
 
 - One slice per call. Never start another.
 - Never commit a slice without a verify run that passed the gate. Tests alone are not the gate.
+- Never commit a slice whose last review-change block has a `blocks` finding, or without a review at all.
 - Never edit the slices file, the spec, or what the feature map already says.
 - Never put `Slice:` on a `hitl` slice before its sign-off.
 - Never merge, force push, or push to any branch but `slices/<slug>`.
