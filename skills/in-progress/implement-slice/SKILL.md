@@ -183,7 +183,7 @@ Its body holds one line per slice, with id, title and blockers, then a `## Slice
 After every commit, append a section to the PR body under `## Slices`: a `### S3 - <title>` heading, the commit's short SHA, and its proof lines and review block exactly as the commit body has them.
 Replace nothing that is already there.
 
-Invoking this skill permits pushing to `slices/<slug>` and editing its own PR.
+Invoking this skill permits pushing to `slices/<slug>`, and editing its own PR's body and `attention:` labels.
 It permits nothing else: no other branch, no force push, and never a merge.
 
 ## Sign-off
@@ -208,7 +208,11 @@ This one sees the branch, which is the only place duplication between slices sho
 Call the Skill tool with "review-change" and the default branch as the argument.
 Then check the whole branch against the spec yourself: every behaviour claimed, nothing the spec puts out of scope.
 Fix every `blocks` finding and every spec gap, pass the gate once more for every slice the fixes touched, and commit with `Address review` as the subject and the proof and review block in the body.
+Push it.
 Append that review block to the PR body under a `## Branch review` heading.
+
+Then call the Skill tool with "pr", so the PR opens with an attention call, a summary, the evidence and the merge danger, and gets its `attention:` label.
+It keeps the slice list, `## Slices` and `## Branch review` in a collapsed build log, and reads them as its evidence and findings.
 Then mark the PR ready for review.
 
 ## Step 10: Report
@@ -217,6 +221,7 @@ Then mark the PR ready for review.
 - the commit and the PR
 - the verify run folder
 - the review's `Open` findings, one line each
+- after Step 9, the PR's attention level and its reasons
 - what is ready now, and that the next slice gets a fresh conversation: the user starts it with `/implement-slice`
 
 ## Rules that do not bend
