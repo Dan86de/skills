@@ -9,6 +9,8 @@ skills/<bucket>/<name>/
   SKILL.md
   agents/openai.yaml
   <SUPPORTING-FILE>.md   (optional, referenced from SKILL.md)
+  references/            (optional, docs the skill reads on demand)
+  scripts/               (optional, code the skill runs, see below)
 ```
 
 `SKILL.md` frontmatter:
@@ -86,6 +88,22 @@ dependencies:
 ```
 
 Reference: [OpenAI's skill docs](https://learn.chatgpt.com/docs/build-skills.md).
+
+## Scripts
+
+A skill can ship code in `scripts/` when the model would otherwise do something a program does better: validate a format, render a page, compute.
+The model writes data, the script checks or transforms it.
+The model never hand-writes what a script can generate.
+
+Rules that keep scripts harness-neutral:
+
+- Node 18 or newer, plain `.mjs`, zero dependencies. No `package.json` inside a skill, no install step.
+- `SKILL.md` names the script relative to its own folder ("`scripts/map.mjs` sits next to this file"), never by an absolute or harness path.
+- A script validates its input before acting and exits non-zero with a readable message, so the model can fix the data and retry.
+- Output lands in the user's project (usually `.scratch/`), never inside the skill folder.
+
+Another skill that needs the same script calls the Skill tool with the owning skill, as below.
+It never runs `../other-skill/scripts/...` directly.
 
 ## Calling one skill from another
 

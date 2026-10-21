@@ -1,6 +1,6 @@
 ---
 name: interview
-description: Settle every decision behind a plan before anything gets built, in rounds rather than one question at a time. Opens with a kill condition that can end the session in a cut, closes with a decision record. Use when a plan, feature, or design needs pressure-testing before a spec exists, when the user says "interview me", "grill me", "pressure-test this", "poke holes in this", or "before we plan this", and when another skill needs the decisions settled before it writes anything.
+description: Settle every decision behind a plan before anything gets built, in rounds rather than one question at a time. Opens with a kill condition that can end the session in a cut, closes with a decision record. Use when a plan, feature, or design needs pressure-testing before a spec exists, when the user says "interview me", "grill me", "pressure-test this", "poke holes in this", or "before we plan this", and when another skill needs the decisions settled before it writes anything. Draws the design tree as a page when it grows or when asked to "show me the tree".
 ---
 
 # Interview
@@ -80,6 +80,48 @@ The frontier is your judgement, not a computed graph.
 When you are unsure whether two questions in a round are independent, they are not.
 Put the second one in a later round.
 
+## The picture
+
+The design tree is a tree, so it can be drawn.
+Once it holds eight or more decisions, or whenever the user asks to see it, keep a picture of it beside the rounds.
+
+The picture is a map file at `.scratch/interviews/<slug>/tree.json`, rendered to `tree.html` beside it.
+The first time, call the Skill tool with "explore" and ask it to draw the tree.
+It owns the format and the script, and it tells you the render command.
+After that, rewrite `tree.json` and re-run the same command after every round.
+If the explore skill is not installed, skip the picture.
+The interview works without it.
+
+How the tree maps onto the file:
+
+- **Centre**: the subject.
+- **Branches**: round zero (pain, wedge, kill condition), then one branch per top-level decision, then the sweep once it starts.
+- **Children**: the decisions that hang off a decision. A decision with two prerequisites sits under one and `links` to the other.
+- **`summary`**: the question while it is open, the chosen answer once settled.
+- **`body`**: the options, and for settled ones the rejected alternatives with their reasons.
+- **`ask`**: the question exactly as asked in the current round, frontier nodes only.
+
+Put these `states` in the file, so the legend reads as the interview:
+
+```json
+"states": {
+  "settled":  { "label": "Settled",                   "mark": "filled", "tone": "ok" },
+  "frontier": { "label": "In this round",             "mark": "ring",   "tone": "accent" },
+  "waiting":  { "label": "Waiting on another answer", "mark": "dashed", "tone": "muted" },
+  "fact":     { "label": "Fact being checked",        "mark": "dashed", "tone": "warn" },
+  "not-doing":{ "label": "Not doing",                 "mark": "cross",  "tone": "muted" },
+  "cut":      { "label": "Cut",                       "mark": "cross",  "tone": "danger" }
+},
+"kicker": "Interview",
+"askLabel": "Asked this round",
+"promptTemplate": "About {label} ({id}): ",
+"promptLabel": "Copy a reply about this decision"
+```
+
+The picture never replaces the round.
+Questions are still asked, numbered and answered in the conversation.
+After each round, one line with the page's path is enough.
+
 ## Facts and decisions
 
 **Facts are yours to find, never the user's.**
@@ -113,6 +155,7 @@ Frontier-empty alone is not the end.
 
 Then emit this into the conversation.
 Do not write it to disk unless the user asks.
+If you kept a picture, render it one last time so every node is settled, not doing, or cut, and give its path under the record.
 
 ```markdown
 ## Decision record: <subject>

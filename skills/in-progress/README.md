@@ -7,7 +7,8 @@ Public on purpose, feedback wanted, not shipped in the Claude Code plugin and no
 
 Promoting one: `git mv` it into `engineering/` or `productivity/`, add it to that bucket's `README.md`, the top-level `README.md`, and `.claude-plugin/plugin.json`.
 
-- [interview](./interview/SKILL.md) - settle every decision behind a plan before it gets built, in rounds, ending in a decision record.
+- [explore](./explore/SKILL.md) - map a topic as an interactive mind map that surfaces what you did not know to ask, grown branch by branch, rendered by a bundled zero-dependency script.
+- [interview](./interview/SKILL.md) - settle every decision behind a plan before it gets built, in rounds, ending in a decision record, with the design tree drawn as a page once it grows.
 - [write-spec](./write-spec/SKILL.md) - turn a settled plan or decision record into a grounded spec, one document, written to `.scratch/specs`.
 - [write-slices](./write-slices/SKILL.md) - decompose a spec from `write-spec` into vertical slices with blocking edges and per-slice autonomy, one JSON file written to `.scratch/slices`.
 - [implement-slice](./implement-slice/SKILL.md) - build one ready slice from a `write-slices` file in a fresh conversation, prove it with the project's `verify` skill, and commit it to the spec's branch and draft PR.
