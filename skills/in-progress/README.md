@@ -12,7 +12,8 @@ Promoting one: `git mv` it into `engineering/` or `productivity/`, add it to tha
 - [write-spec](./write-spec/SKILL.md) - turn a settled plan or decision record into a grounded spec, one document, written to `.scratch/specs`.
 - [write-slices](./write-slices/SKILL.md) - decompose a spec from `write-spec` into vertical slices with blocking edges and per-slice autonomy, one JSON file written to `.scratch/slices`.
 - [implement-slice](./implement-slice/SKILL.md) - build one ready slice from a `write-slices` file in a fresh conversation, prove it with the project's `verify` skill, and commit it to the spec's branch and draft PR.
-- [review-change](./review-change/SKILL.md) - review a change against the repo's own coding standards in a fresh context, fix what is safe to fix in the working tree, and report the rest as a fixed-shape block.
+- [review-change](./review-change/SKILL.md) - review a change against the repo's own coding standards and its fit with the existing codebase in a fresh context, fix what is safe to fix in the working tree, and report the rest as a fixed-shape block.
 - [pr-brief](./pr-brief/SKILL.md) - write a branch's PR body with a visual summary, harvested evidence and a one-way or two-way door call, and put it on the PR with an `attention:` label that says whether to read, spot-check or skim.
 - [codify](./codify/SKILL.md) - turn review comments you keep making into standards entries, one-way doors and checker rules, proposed for approval and written to the working tree.
 - [make-verify](./make-verify/SKILL.md) - generate a project's `verify` skill, which starts the product, drives it the way a user does, and records whether each check passed, plus a feature map to drive it from.
+- [recohere](./recohere/SKILL.md) - find where a codebase does one job more than one way, rank each by how much it slows change, and finish the migration you pick with a guard against regressions.

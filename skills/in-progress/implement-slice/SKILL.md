@@ -4,235 +4,89 @@ description: Build one ready slice from a write-slices file, prove it with the p
 disable-model-invocation: true
 ---
 
-# Implement Slice
+Build exactly one **vertical slice**, prove it in the running product, and commit it with the proof attached.
+One call is one slice; the next slice gets a fresh conversation.
+Progress lives only in git: a slice is done when its commit is on the branch.
 
-Build exactly one slice, prove it in the running product, and commit it with the proof attached.
+## Steps
 
-One call is one slice, in a fresh conversation.
-The next slice gets the next conversation, so each one starts with a clean context and reads only what it points at.
-Never start a second slice in the same call, even when one is ready and the first went quickly.
+1. **Find the slices file**: the path given, the only file in `.scratch/slices/`, or ask.
+   `<slug>` is its name without extension; the branch is `slices/<slug>`.
+   Read it and the spec it names.
 
-Everything this skill knows about progress comes from git.
-The slices file is read-only, there are no notes between calls, and a slice is done when its commit is on the branch.
+2. **Find the verify skill**: a project skill that runs the product and records whether checks passed, and its feature map.
+   With none, tell the user to run `/make-verify` and end the turn.
 
-## Step 1: Find the slices file
+3. **Get on the branch.**
+   A dirty tree stops the skill: list the files and leave them to the user.
+   Switch to `slices/<slug>` and pull, or create it from the up-to-date default branch.
+   Stop if the slices file's `commit` is not an ancestor of `HEAD`, or the verify skill is not on this branch yet.
 
-Take the path from the invocation.
-If none was given and `.scratch/slices/` holds exactly one file, use it and say so.
-Otherwise ask for the path.
+4. **Pick the slice** from the trailers on `<default-branch>..HEAD`:
 
-`<slug>` is the file's name without its extension, and the branch is `slices/<slug>`.
+   ```bash
+   git log --format='%h Slice=[%(trailers:key=Slice,valueonly,separator=%x2C)] Pending=[%(trailers:key=Slice-Pending,valueonly,separator=%x2C)]' <default-branch>..HEAD
+   ```
 
-Read the file, then read the spec it names in full.
+   **Done** has `Slice: <id>`, **pending** has only `Slice-Pending: <id>`, **ready** has neither and every `blocked_by` done, **blocked** is the rest.
+   With `--signoff <id>`, follow [references/signoff.md](references/signoff.md) instead.
+   Refuse a named slice that is done, or blocked (name the blocker); take it if it is ready or pending (rework).
+   With none named, take the lowest ready id.
+   If every slice is done and the PR has no `## Branch review` yet, go to step 9; if nothing is ready, say what is pending or blocked by what, and end the turn.
+   Open your reply with it, for example `Slice S3: Reject a malformed header (also ready: S5)`.
 
-## Step 2: Find the verify skill
+5. **Build it** from pointers only: the spec's claimed Behaviour entries and Seams, the slice's `seam`, `done` and `scope`, the verify skill and map, and `git show` of each blocker's commit.
+   A missing seam file the spec does not mark new means the spec and slices need regenerating: stop.
+   Build only what the slice claims.
+   Each `done.automated` item is a **verify item** if the verify skill can drive it, otherwise a **test item** at the slice's seam.
+   Add missing behaviour to the feature map in this commit; changing what it already says needs a `manual` verdict.
+   When an edge case forces you off the spec, take the conservative option, note it as a **deviation**, and keep going.
 
-Look for a project skill, in `.agents/skills/` or a harness's own skills folder, whose `SKILL.md` says it runs the product and records whether a check passed.
-Read its `SKILL.md` and the feature map it points at.
+6. **Pass the gate** against the code you will commit: the project's typecheck, lint and tests pass; a verify run (call the Skill tool with the verify skill's name) started after your last edit has its verdict filled in, no `fail`, and `pass` on every verify item; every test item has a passing test.
+   Unclaimed checks may be `not driven`.
+   On `fail`, fix and rerun, up to three different causes.
+   A `manual`, or a verify item `not driven`, means the map, the slicing or the change is wrong: the user decides.
+   On any stop, commit nothing, leave the diff, report the check, the causes tried and the run folders, and end the turn.
 
-If there is none, stop.
-Tell the user to run `/make-verify` in this project first, and end the turn.
-There is no fallback: a slice built without a verify run is not done, and this skill never calls it done.
+7. **Review it**: call the Skill tool with "review-change" and the arguments `HEAD --no-check`.
+   Its fixes are ungated edits, so pass step 6 again.
+   Fix any `blocks` finding, regate, and review once more; a second `blocks`, or no subagent available, stops the slice like step 6.
 
-## Step 3: Get on the branch
+8. **Commit and push** one commit to `slices/<slug>`, subject the slice title:
 
-The working tree must be clean, ignored files aside.
-If it is not, stop and list the changed files.
-A dirty tree is usually a failed attempt at a slice, and whether to keep, stash or discard it is the user's call, never this skill's.
+   ```text
+   Reject a malformed header
 
-If `slices/<slug>` exists, locally or on the remote, switch to it and pull.
-If it does not, create it from the up-to-date default branch.
+   Slice S3 of .scratch/specs/<slug>.md, behaviours 4, 5.
 
-The slices file's `commit` must be an ancestor of `HEAD`.
-If it is not, stop: the decomposition was made against a history this branch does not contain.
+   Verify run 20260927-103133-773664: Done
+   - <verify item> -> <check heading>: pass
+   - <test item> -> <test file>: pass
+   Project checks: <each command>: pass
 
-The verify skill from Step 2 must still exist on this branch.
-If it does not, stop: it was committed somewhere the default branch has not caught up with yet, and the user lands that commit on the default branch before any slice starts.
+   Deviations:
+   - <spec line or behaviour> - <what you did instead> - <why>
 
-## Step 4: Read progress and pick the slice
+   <the review-change block, exactly as returned>
 
-Read the trailers of every commit between the default branch and `HEAD`:
+   Slice: S3
+   ```
 
-```bash
-git log --format='%h Slice=[%(trailers:key=Slice,valueonly,separator=%x2C)] Pending=[%(trailers:key=Slice-Pending,valueonly,separator=%x2C)]' <default-branch>..HEAD
-```
+   `Deviations:` reads `- none` when there were none.
+   A `hitl` slice lists its `done.manual` items under `Awaiting sign-off:` after the checks, with trailer `Slice-Pending: S3`.
+   The first commit opens a draft PR to the default branch, titled as the spec, its body one line per slice (id, title, blockers) then `## Slices`.
+   After each commit, append to `## Slices` a `### S3 - <title>` section with the short SHA and the commit body below the first line, trailer excluded.
 
-Each line is one commit, with its `Slice:` values and its `Slice-Pending:` values in separate brackets.
+9. **Close the branch** once every slice is done.
+   Call the Skill tool with "review-change" and the default branch, the only review that sees duplication between slices, and check the branch against the spec yourself.
+   Fix every `blocks` finding and spec gap, regate what the fixes touched, commit as `Address review` with proof and block, push, and append the block under `## Branch review`.
+   Call the Skill tool with "pr-brief", then mark the PR ready for review.
 
-A slice is:
+## Report
 
-- **done** when a commit carries `Slice: <id>`
-- **pending** when a commit carries `Slice-Pending: <id>` and none carries `Slice: <id>`
-- **ready** when it is neither, and every id in its `blocked_by` is done
-- **blocked** otherwise
+The slice and its state, the commit and PR, the verify run, the review's `Open` lines, any deviations, the PR's attention level after step 9, and what is ready next.
 
-A pending slice does not unblock anything.
+## Guardrails
 
-If the invocation names a slice with `--signoff`, go to [Sign-off](#sign-off).
-
-If it names a slice, that is the slice.
-Refuse, saying which blocker is not done, when it is blocked.
-Refuse when it is done.
-A pending slice may be named: that is rework after a sign-off found a problem, and it goes through every step below again.
-
-If it names none, take the ready slice with the lowest id.
-When nothing is ready, say which slices are pending and which are blocked, and by what, then end the turn.
-
-The first line of your reply names the slice you took and the others that were ready, for example `Slice S3: Reject a malformed header (also ready: S5)`.
-
-Check that the slice's seam file exists.
-A seam the spec marks as new has no file yet, and passes.
-If a cited file is missing, stop and tell the user to regenerate the spec and slices.
-
-## Step 5: Build it
-
-Your context is pointers, and nothing else:
-
-- the spec's Behaviour entries whose numbers the slice claims, and its Seams section
-- the slice's `seam`, `done` and, on non-feature kinds, `scope`
-- the verify skill and the feature map
-- `git show` of every commit whose `Slice:` trailer names one of this slice's blockers
-
-Build only what the slice claims.
-A behaviour another slice claims is not yours, even when it is one line away.
-
-Before you start, sort each `done.automated` item:
-
-- a **verify item** is one the verify skill can drive, usually written as a step in the feature map
-- a **test item** is anything else a machine checks; it becomes a test at the slice's seam, if one does not already cover it
-
-If a `done.automated` item describes behaviour the feature map does not have yet, update the map in this slice's commit, in the map's own shape.
-That is adding what the spec asked for.
-Changing what the map already says is not, and happens only through a `manual` verdict (Step 6).
-
-## Step 6: Pass the gate
-
-A slice is done when all of these hold at once, against the code you are about to commit:
-
-1. The project's own typecheck, lint and test commands pass, taken from its scripts, its CI workflow or its agent instructions.
-2. A verify run started after your last edit to the code.
-   Call the Skill tool with the verify skill's name, and follow it.
-   A run started before an edit proves the old code: start another.
-3. That run's `evidence.md` has its verdict filled in.
-   A placeholder verdict is an abandoned run, and proves nothing.
-4. No check in it is `fail`.
-5. Every verify item is paired with the check that proves it, and that check is `pass`.
-6. Every test item is paired with the test that proves it, and that test passes.
-
-A check this slice does not claim may come back `not driven`, and that is fine.
-Everything else stops the slice:
-
-- **A check fails.**
-  Find the cause and fix it, then run the gate again.
-  After three attempts at three different causes, stop.
-- **A check comes back `manual`.**
-  The product disagrees with the map because of this change, and whether the map or the change is wrong is the user's call.
-  Stop, and never edit the map to make a check pass.
-- **A verify item comes back `not driven`.**
-  It was sliced as automated because verify can drive it, so either the slicing or the verify skill is wrong.
-  Stop.
-
-When you stop, commit nothing and add no trailer.
-Leave the diff in the working tree, and report: the check or command that stopped you, each cause you tried and what it showed, and the run folders whose evidence shows it.
-Then end the turn.
-
-## Step 7: Review it
-
-The gate proves the slice works.
-The review makes it good, in a context that did not write it.
-
-Call the Skill tool with "review-change" and the arguments `HEAD --no-check`, so it reviews exactly the uncommitted slice and leaves checking to your gate.
-Keep the block it returns: it goes into the commit.
-
-- **It applied fixes.** They are edits you did not gate. Pass the gate in Step 6 again, with a new verify run.
-- **`Open` has a `blocks` finding.** Fix every one yourself, pass the gate again, and call review-change once more.
-  This gets one round.
-  If the second review still has a `blocks` finding, stop the way Step 6 stops, and include the review block in the report.
-- **It cannot start its reviewer.** Stop the way Step 6 stops, and say the slice needs a harness that can run a subagent.
-
-`judgement` and `question` findings never stop a slice.
-They travel with the commit and the PR for the person who reviews it.
-
-## Step 8: Commit and push
-
-One commit per slice.
-The subject is the slice's title.
-The body carries the proof, because the evidence file itself stays on this machine:
-
-```text
-Reject a malformed header
-
-Slice S3 of .scratch/specs/<slug>.md, behaviours 4, 5.
-
-Verify run 20260927-103133-773664: Done
-- <verify item> -> <check heading>: pass
-- <test item> -> <test file>: pass
-Project checks: <each command>: pass
-
-<the review-change block, exactly as returned>
-
-Slice: S3
-```
-
-A `hitl` slice lists every `done.manual` item under `Awaiting sign-off:`, after the checks, and its trailer is `Slice-Pending: S3` instead.
-It stays pending, unblocking nothing, until the user signs it off.
-
-Push to `slices/<slug>`.
-
-The first commit on a new branch also opens a draft PR from it to the default branch.
-Its title is the spec's title.
-Its body holds one line per slice, with id, title and blockers, then a `## Slices` heading.
-
-After every commit, append a section to the PR body under `## Slices`: a `### S3 - <title>` heading, the commit's short SHA, and its proof lines and review block exactly as the commit body has them.
-Replace nothing that is already there.
-
-Invoking this skill permits pushing to `slices/<slug>`, and editing its own PR's body and `attention:` labels.
-It permits nothing else: no other branch, no force push, and never a merge.
-
-## Sign-off
-
-`--signoff S4` records that the user has looked at a pending slice.
-
-Refuse when S4 is not pending.
-Otherwise show its `Awaiting sign-off:` list and the PR section for it, and ask the user to confirm each item.
-When they confirm all of them, make an empty commit whose subject is `Sign off S4: <title>`, whose body lists each item as confirmed, and whose trailer is `Slice: S4`.
-Push it and append `Signed off in <short SHA>` to S4's section in the PR body.
-
-If they do not confirm, commit nothing.
-They fix it by running this skill on S4 again, which rebuilds it through the gate.
-
-## Step 9: Close the branch
-
-After a commit that leaves every slice in the file done, finish the branch in the same call.
-
-The per-slice reviews each saw one slice.
-This one sees the branch, which is the only place duplication between slices shows up.
-
-Call the Skill tool with "review-change" and the default branch as the argument.
-Then check the whole branch against the spec yourself: every behaviour claimed, nothing the spec puts out of scope.
-Fix every `blocks` finding and every spec gap, pass the gate once more for every slice the fixes touched, and commit with `Address review` as the subject and the proof and review block in the body.
-Push it.
-Append that review block to the PR body under a `## Branch review` heading.
-
-Then call the Skill tool with "pr-brief", so the PR opens with an attention call, a summary, the evidence and the merge danger, and gets its `attention:` label.
-It keeps the slice list, `## Slices` and `## Branch review` in a collapsed build log, and reads them as its evidence and findings.
-Then mark the PR ready for review.
-
-## Step 10: Report
-
-- the slice, and whether it is done, pending sign-off or stopped
-- the commit and the PR
-- the verify run folder
-- the review's `Open` findings, one line each
-- after Step 9, the PR's attention level and its reasons
-- what is ready now, and that the next slice gets a fresh conversation: the user starts it with `/implement-slice`
-
-## Rules that do not bend
-
-- One slice per call. Never start another.
-- Never commit a slice without a verify run that passed the gate. Tests alone are not the gate.
-- Never commit a slice whose last review-change block has a `blocks` finding, or without a review at all.
-- Never edit the slices file, the spec, or what the feature map already says.
-- Never put `Slice:` on a `hitl` slice before its sign-off.
-- Never merge, force push, or push to any branch but `slices/<slug>`.
-- Never leave progress anywhere but a commit trailer.
+Push only to `slices/<slug>`, edit only its PR's body and `attention:` labels, and never force push or merge.
+The slices file, the spec, and what the feature map already says are read-only.

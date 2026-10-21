@@ -6,111 +6,64 @@ disable-model-invocation: true
 
 # Write Spec
 
-Turn what is already settled into a document that outlives the conversation that settled it.
+Synthesize what is already settled into a spec, adding the uncontested facts a decision record drops: no interview, no new decisions.
+If the work fits in the current context, say once that implementing directly is cheaper.
 
-You are not deciding anything here.
-Every decision this document records was made before you started.
-Your job is to state them, ground them in the code, and add the parts nobody argued about because nobody had to.
+If an argument names a file, issue, or URL, read it in full first.
 
-That last part is the whole reason this skill exists.
-A decision record is lossy on purpose: it keeps what was contested and drops what was not.
-A spec carries both.
+## 1. Ground it in the code
 
-## When this is the wrong tool
-
-If the work can be implemented in the context that decided it, say so and offer to implement instead.
-A two-page spec for a one-file change is how people stop trusting the skill.
-
-Say it once.
-If the user wants the spec anyway, write the spec.
-
-## Step 1: Take the input
-
-Work from what is already in the conversation.
-
-Do not interview the user.
-Every question you are tempted to ask about intent belongs to the `interview` skill, which runs before this one and may already have run.
-
-If an argument names a file, an issue, or a URL, read it in full before anything else.
-A decision record is the ideal input, not a required one.
-
-## Step 2: Ground it in the code
-
-The spec has to state what the conversation never questioned: what exists today, and where this gets tested.
-Only the codebase has those.
-
-Run three searches.
-If your harness can run parallel subagents, dispatch one per role and run them concurrently.
-If it cannot, do all three yourself.
+Run three searches, as parallel subagents if your harness has them:
 
 - **Locate**: where the affected code lives.
-- **Analyze**: how the current implementation actually works, traced rather than guessed.
-- **Prior art**: the closest existing feature of the same shape, and the tests covering it.
+- **Analyze**: how the current implementation works, traced.
+- **Prior art**: the closest existing feature of the same shape, and its tests.
 
-Each role is a documentarian, not a critic.
-Describe what exists.
-Do not propose improvements, identify problems, or suggest a design.
-A grounding pass that starts designing has pre-decided the thing the user already decided, and the spec will quietly contradict the record it came from.
+Each is a documentarian: describe, never design.
+Also look for a **verification skill**: a project skill (in `.agents/skills/` or a harness skills folder) whose `SKILL.md` says it runs the product and records whether a check passed.
 
-Then settle the **seams**: the points at which this feature gets tested.
-Prefer an existing seam to a new one.
-Prefer the highest seam available.
-Fewer seams is better, and one is ideal.
-
+Then sketch the **seams** where this gets tested.
+Prefer existing seams, the highest one available, and as few as possible; one is ideal.
 Check the seams with the user before writing.
-This is the decision that most shapes the implementation, and it is the one an interview almost never surfaces.
 
-## Step 3: Write the spec
+## 2. Write the spec
 
-Ten sections, in this order, every time.
+Use these sections, in order, with these exact names.
+Facts about today cite `file:line` (Current state, Seams); Decisions and Sequence never do.
 
 <spec-template>
 
 ## Problem
 
-The problem, from the user's perspective.
-Observable: who hits it, how often, how you know.
-Not a missing feature.
+The problem from the user's perspective, observable: who hits it, how often, how you know.
 
 ## Solution
 
-What changes for the user.
-The narrowest version still worth shipping.
+What changes for the user, in the narrowest version still worth shipping.
 
 ## Current state
 
-What exists today in the code this touches, with `file:line`.
-Constraints found while grounding.
-What is missing.
+What exists today, with `file:line`, plus constraints and what is missing.
 
 ## Behaviour
 
-A numbered list of statements that are true once this works.
-Each one checkable by someone using the product.
-One line per behaviour, no roles and no motives: the "as an actor, I want a feature, so that a benefit" framing costs three clauses to encode one fact that is identical on every line.
+A numbered list of statements true once this works, one line each, each checkable by someone using the product.
+No "as an actor, I want" framing.
 
 ## Decisions
 
-Each decision, what was chosen, and the alternative that lost with the reason it lost.
-A record of only the winners cannot defend itself in three months.
-
-No file paths and no code.
-Exception: a snippet that encodes a decision more precisely than prose can, such as a schema, a state machine, or a type shape.
-Inline it, trimmed to the decision-rich part.
+Each decision, the alternative that lost, and why it lost.
+No file paths or code, except a trimmed snippet (schema, state machine, type shape) that encodes a decision more precisely than prose.
 
 ## Seams
 
-Where this gets tested, with `file:line` for seams that already exist.
-New seams named, with the reason an existing one would not do.
+Where this gets tested: `file:line` for existing seams, and for each new seam the reason no existing one would do.
 
 ## Sequence
 
-The order the behaviour arrives in, from the user's point of view.
-Product ordering only: no work units, no blocking edges, no technical dependencies.
-Those get decided against the architecture by whatever decomposes this next.
-
-More than about seven entries means the scope got wide.
-Say so rather than emitting twelve.
+The order behaviour arrives in, from the user's point of view.
+Product ordering only: no work units or blocking edges.
+Past about seven entries, say the scope got wide.
 
 ## Out of scope
 
@@ -119,7 +72,6 @@ Named, so it cannot creep back in.
 ## Accepted breakage
 
 What breaks or gets worse, and why that is acceptable.
-An empty section means you have not looked.
 
 ## Done means
 
@@ -128,35 +80,11 @@ An empty section means you have not looked.
 
 </spec-template>
 
-**When the project has a verification skill**, Done means splits differently.
-A verification skill is a project skill, in `.agents/skills/` or a harness's own skills folder, whose `SKILL.md` says it runs the product and records whether a check passed.
-Look for one while grounding, and if there is one, read its `SKILL.md` for what it can drive and read.
-Every check it can run goes under **Automated**, written as the steps an agent would take with it, such as "verify: submit the signup form, the dashboard greets the new account, and one `accounts` row exists".
-**Manual** then keeps only what needs a person: judging how something looks or reads, or an action no agent can perform.
-A project without one keeps the split above, because there a check against the running product has nobody to run it but a person.
+With a verification skill, read its `SKILL.md`, then put every check it can run under **Automated** as agent steps, such as "verify: submit the signup form, the dashboard greets the new account, and one `accounts` row exists".
+**Manual** keeps only judging look and feel, or actions no agent can perform.
 
-One rule governs the whole document.
-**Facts about today carry citations. Decisions about tomorrow carry none.**
-Current state and Seams cite `file:line`.
-Decisions and Sequence never do, because file paths and code snippets go stale faster than anything else in the document.
+## 3. Land it
 
-## Step 4: Land it
-
-Propose `.scratch/specs/<slug>.md` and confirm the path before writing.
-If the repo clearly has its own home for documents like this, offer that instead and let the user pick.
-Never invent a convention in someone else's repo.
-
-Check whether `.scratch/` is ignored by git.
-If it is not, offer to add it.
-Never edit `.gitignore` uninvited.
-
+Propose `.scratch/specs/<slug>.md`, or the repo's own home for such documents if it clearly has one, and confirm the path before writing.
+If `.scratch/` is not git-ignored, offer to add it; edit `.gitignore` only with consent.
 The spec file is the only artifact.
-No research notes, no summary, no second copy.
-
-## Rules that do not bend
-
-- Never interview. Everything you want to ask was decided before you got here.
-- The grounding pass describes. It does not design.
-- Never cite a file path in Decisions or Sequence.
-- Never put work units or blocking edges in Sequence.
-- Confirm the path before writing, and leave nothing behind but the spec.
