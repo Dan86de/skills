@@ -1,5 +1,19 @@
 # dan86de-skills
 
+## 0.10.0
+
+### Minor Changes
+
+- [`a9586e2`](https://github.com/Dan86de/skills/commit/a9586e227efc6ec3353f005866a7f49af581c803) Thanks [@Dan86de](https://github.com/Dan86de)! - New in-progress skill `explore` maps a topic as an interactive mind map that surfaces unknown unknowns, grown branch by branch on request.
+  It ships `scripts/map.mjs`, a zero-dependency Node script that checks a map file and renders it to one self-contained HTML page.
+  `interview` now draws its design tree with that renderer once the tree grows or when asked, with states for settled, in-round, waiting, cut and not-doing decisions.
+  The conventions gain a section on bundling scripts in a skill.
+
+### Patch Changes
+
+- [#16](https://github.com/Dan86de/skills/pull/16) [`e4dfa4c`](https://github.com/Dan86de/skills/commit/e4dfa4c8760bf74f48a5fa2faee99f7561aedc2f) Thanks [@Dan86de](https://github.com/Dan86de)! - `make-verify` now reports the branch its files landed on and that they must reach the default branch before `implement-slice` runs.
+  `implement-slice` stops with a clear message when the verify skill is missing from the slice branch, instead of building without it.
+
 ## 0.9.0
 
 ### Minor Changes
