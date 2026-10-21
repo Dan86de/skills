@@ -1,0 +1,6 @@
+interface:
+  display_name: "Recohere"
+  short_description: "Find duplicate models of one job and finish a migration"
+
+policy:
+  allow_implicit_invocation: false
