@@ -1,5 +1,15 @@
 # dan86de-skills
 
+## 0.13.0
+
+### Minor Changes
+
+- [#22](https://github.com/Dan86de/skills/pull/22) [`f3637b1`](https://github.com/Dan86de/skills/commit/f3637b13a5b19a54aff171bb01facdd3cec1f5ef) Thanks [@Dan86de](https://github.com/Dan86de)! - write-spec and write-slices gain an unattended rule for headless runs with no person to answer.
+  write-spec settles its seam check from `spec/vision.md` and the decision record and writes each choice into the spec.
+  write-slices answers its own outline review and records each answer in a new top-level `unattended` list in `slices.json`.
+  Both write nothing and end with the question when only a person can settle it.
+  The project file contract lists faber runs as a `.scratch/` writer.
+
 ## 0.12.0
 
 ### Minor Changes
