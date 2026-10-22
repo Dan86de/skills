@@ -1,6 +1,6 @@
 ---
 name: write-slices
-description: Decompose a spec written by write-spec into vertical slices with blocking edges, one JSON file written to .scratch/slices.
+description: Decompose a spec written by write-spec into vertical slices with blocking edges, one JSON file written beside it as spec/features/<slug>/slices.json.
 disable-model-invocation: true
 ---
 
@@ -11,7 +11,7 @@ Cut a spec into reviewable slices with blocking edges, written as one JSON file.
 ## 1. Take the spec
 
 Take the path from the invocation.
-If none was given and `.scratch/specs/` holds exactly one file, propose it; otherwise ask.
+If none was given and exactly one `spec/features/<slug>/spec.md` has no `slices.json` beside it, propose it; otherwise ask.
 
 If the spec lacks a **Behaviour** or **Seams** section, name it, tell the user to run `/write-spec`, and end the turn.
 
@@ -57,13 +57,13 @@ Wait, then apply corrections.
 
 ## 5. Write the file
 
-Confirm the path `.scratch/slices/<slug>.json` (`<slug>` is the spec's filename without extension), or the repo's own home for such documents.
-If `.scratch/` is not git-ignored, offer to add it.
+Write `spec/features/<slug>/slices.json`, beside the spec.
 Regenerate an existing slices file whole.
+Tell the user to commit the feature folder: implement-slice reads it from git.
 
 ```json
 {
-  "spec": ".scratch/specs/<slug>.md",
+  "spec": "spec/features/<slug>/spec.md",
   "commit": "<sha>",
   "branch": "<branch>",
   "slices": [

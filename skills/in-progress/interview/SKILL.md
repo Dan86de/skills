@@ -12,7 +12,7 @@ When unsure whether two questions are independent, they are not: put the second 
 
 ## 1. Recon
 
-Read the code, docs, glossary, and whatever the user pointed at, enough to ground every question in what exists.
+Read `spec/vision.md` and `spec/glossary.md` if they exist, then the code, docs, and whatever the user pointed at, enough to ground every question in what exists.
 Report it in three or four lines, then go straight to round zero.
 
 ## 2. Round zero
@@ -65,7 +65,8 @@ Anything it surfaces goes back on the frontier, then sweep again.
 ## 5. The decision record
 
 The session ends when the frontier is empty, the sweep is clean, and the user confirms a shared understanding.
-Emit this into the conversation, not to disk unless asked.
+Emit it into the conversation and write it to `spec/features/<slug>/decisions.md`, where `<slug>` is a short kebab-case name for the subject that you confirm with the user.
+A cut is written there too, so the reason survives.
 If you kept a picture, render it once more with every node settled, not doing, or cut, and give its path under the record.
 
 ```markdown

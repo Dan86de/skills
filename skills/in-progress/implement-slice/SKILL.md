@@ -10,8 +10,8 @@ Progress lives only in git: a slice is done when its commit is on the branch.
 
 ## Steps
 
-1. **Find the slices file**: the path given, the only file in `.scratch/slices/`, or ask.
-   `<slug>` is its name without extension; the branch is `slices/<slug>`.
+1. **Find the slices file**: the path given, `spec/features/<slug>/slices.json` for a feature the user names, the only slices file under `spec/features/`, or ask.
+   `<slug>` is its folder name; the branch is `slices/<slug>`.
    Read it and the spec it names.
 
 2. **Find the verify skill**: a project skill that runs the product and records whether checks passed, and its feature map.
@@ -20,7 +20,7 @@ Progress lives only in git: a slice is done when its commit is on the branch.
 3. **Get on the branch.**
    A dirty tree stops the skill: list the files and leave them to the user.
    Switch to `slices/<slug>` and pull, or create it from the up-to-date default branch.
-   Stop if the slices file's `commit` is not an ancestor of `HEAD`, or the verify skill is not on this branch yet.
+   Stop if the slices file or its spec is not committed on this branch, its `commit` is not an ancestor of `HEAD`, or the verify skill is not on this branch yet.
 
 4. **Pick the slice** from the trailers on `<default-branch>..HEAD`:
 
@@ -57,7 +57,7 @@ Progress lives only in git: a slice is done when its commit is on the branch.
    ```text
    Reject a malformed header
 
-   Slice S3 of .scratch/specs/<slug>.md, behaviours 4, 5.
+   Slice S3 of spec/features/<slug>/spec.md, behaviours 4, 5.
 
    Verify run 20260927-103133-773664: Done
    - <verify item> -> <check heading>: pass

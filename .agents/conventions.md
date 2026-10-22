@@ -100,7 +100,7 @@ Rules that keep scripts harness-neutral:
 - Node 18 or newer, plain `.mjs`, zero dependencies. No `package.json` inside a skill, no install step.
 - `SKILL.md` names the script relative to its own folder ("`scripts/map.mjs` sits next to this file"), never by an absolute or harness path.
 - A script validates its input before acting and exits non-zero with a readable message, so the model can fix the data and retry.
-- Output lands in the user's project (usually `.scratch/`), never inside the skill folder.
+- Output lands in the user's project, at a path from the project file contract below, never inside the skill folder.
 
 Another skill that needs the same script calls the Skill tool with the owning skill, as below.
 It never runs `../other-skill/scripts/...` directly.
@@ -137,3 +137,30 @@ Before committing a skill, check that it does not:
 - assume a specific model, context window, or subagent mechanism
 - hardcode a path under `~/.claude/` or any other single harness's directory
 - use `/slash-command` syntax in an operative instruction
+
+## Project file contract
+
+Skills read and write a fixed set of paths in the user's project, so any harness can run them and any person can find what they left.
+A skill that writes uses only the home below.
+A skill that reads tries the home first, then the fallbacks, so existing repos keep working.
+
+| Path | Committed | Written by | Read by | Fallbacks |
+| --- | --- | --- | --- | --- |
+| `spec/vision.md` | yes | the user | interview, write-spec | none |
+| `spec/glossary.md` | yes | the user | interview, write-spec, pr-brief, recohere | `GLOSSARY.md`, `CONTEXT.md` |
+| `spec/features/<slug>/decisions.md` | yes | interview | write-spec | none |
+| `spec/features/<slug>/spec.md` | yes | write-spec | write-slices, implement-slice, pr-brief | none |
+| `spec/features/<slug>/slices.json` | yes | write-slices | implement-slice | none |
+| `.agents/coding-standards.md` | yes | codify | review-change, pr-brief, codify | `CODING_STANDARDS.md` |
+| `.agents/skills/verify/` | yes | make-verify | write-spec, write-slices, implement-slice | a harness skills folder |
+| `docs/manual/` | yes | make-verify, implement-slice | the verify skill | none |
+| `.scratch/` | no | verify runs, explore maps, interview trees, recohere reports | the skill that wrote it | none |
+
+Rules:
+
+- `spec/` holds what was decided, committed so a fresh session, another harness or a person can pick it up without the conversation.
+- `.scratch/` holds what a run produced, git-ignored and safe to delete.
+- Git trailers stay the source of truth for progress; no skill writes state into `spec/`.
+- `<slug>` is lowercase kebab-case, one per feature, and names the feature folder and the branch `slices/<slug>`.
+- Skills never write `spec/vision.md` or `spec/glossary.md`: they are the user's, and a skill proposes changes in its reply.
+- A skill never invents a new top-level path; add it to this table first.

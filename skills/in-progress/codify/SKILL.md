@@ -12,7 +12,7 @@ Never stage, commit, branch, push, or comment on a PR.
 
 ## 1. Pin the target and the window
 
-The **target** is `CODING_STANDARDS.md` if it exists, otherwise `.agents/coding-standards.md`.
+The **target** is `.agents/coding-standards.md`, or `CODING_STANDARDS.md` when only that exists.
 Never `CONTRIBUTING.md`.
 
 The **window** takes at most one argument:

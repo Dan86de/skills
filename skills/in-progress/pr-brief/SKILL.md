@@ -18,8 +18,8 @@ With no open PR, `gh` or remote, print the body instead of applying it.
 
 ## 2. Gather
 
-Read the diff, `git log --reverse --format='%h %s%n%n%b' <base>..HEAD`, the body, the spec (argument, else one the body or a commit names), root `GLOSSARY.md` or `CONTEXT.md`, and `pull_request_template.md` (`.github/`, `docs/` or root, any case).
-One-way rules: [references/one-way-doors.md](references/one-way-doors.md) plus any `## One-way doors` section in `CODING_STANDARDS.md`, `.agents/coding-standards.md` or `CONTRIBUTING.md`.
+Read the diff, `git log --reverse --format='%h %s%n%n%b' <base>..HEAD`, the body, the spec (argument, else one the body or a commit names), `spec/glossary.md` (else root `GLOSSARY.md` or `CONTEXT.md`), and `pull_request_template.md` (`.github/`, `docs/` or root, any case).
+One-way rules: [references/one-way-doors.md](references/one-way-doors.md) plus any `## One-way doors` section in `.agents/coding-standards.md`, `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
 
 Harvest:
 

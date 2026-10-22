@@ -1,6 +1,6 @@
 ---
 name: write-spec
-description: Turn a settled plan or decision record into a spec, grounded in the codebase and written to .scratch/specs.
+description: Turn a settled plan or decision record into a spec, grounded in the codebase and written to spec/features/<slug>/spec.md.
 disable-model-invocation: true
 ---
 
@@ -10,6 +10,8 @@ Synthesize what is already settled into a spec, adding the uncontested facts a d
 If the work fits in the current context, say once that implementing directly is cheaper.
 
 If an argument names a file, issue, or URL, read it in full first.
+With no argument, propose the one `spec/features/<slug>/decisions.md` that has no `spec.md` beside it, or ask.
+Read `spec/vision.md` and `spec/glossary.md` if they exist.
 
 ## 1. Ground it in the code
 
@@ -85,6 +87,6 @@ With a verification skill, read its `SKILL.md`, then put every check it can run 
 
 ## 3. Land it
 
-Propose `.scratch/specs/<slug>.md`, or the repo's own home for such documents if it clearly has one, and confirm the path before writing.
-If `.scratch/` is not git-ignored, offer to add it; edit `.gitignore` only with consent.
+Write `spec/features/<slug>/spec.md`, beside the decision record when there is one; otherwise propose a short kebab-case slug and confirm it before writing.
 The spec file is the only artifact.
+Tell the user to commit the feature folder: implement-slice reads it from git.

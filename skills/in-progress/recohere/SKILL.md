@@ -13,7 +13,7 @@ This skill finds it and finishes one migration completely, because a migration l
 1. **Scope to where change happens.**
    If the user named an area, take it.
    Otherwise walk `git log` back a few hundred commits and rank directories by how often they change; decoherence only costs where people keep working.
-   Read the glossary, ADRs and standards in scope first.
+   Read the glossary (`spec/glossary.md`), ADRs and standards in scope first.
 
 2. **Find the candidates.**
    Look for each of these, in the scope:

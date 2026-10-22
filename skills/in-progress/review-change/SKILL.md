@@ -18,7 +18,7 @@ Arguments: an optional fixed point, an optional `--no-check`, then optional stan
    Drop untracked dependency installs and build output, and remember them for the report.
    An empty list ends the skill: say there is nothing to review.
 
-2. **Find the standards**, all of them, in precedence order: paths passed as arguments, `CODING_STANDARDS.md`, `.agents/coding-standards.md`, `CONTRIBUTING.md` and any other doc on how to write code here (not a user manual, product doc, or brand guide).
+2. **Find the standards**, all of them, in precedence order: paths passed as arguments, `.agents/coding-standards.md`, `CODING_STANDARDS.md`, `CONTRIBUTING.md` and any other doc on how to write code here (not a user manual, product doc, or brand guide).
    Also collect the linter, formatter and type-checker configs the project's check command uses (not build or test-runner configs), and every `AGENTS.md` and `CLAUDE.md` at the root or in a touched directory.
    No standards at all is normal: the review runs on the baseline.
 
