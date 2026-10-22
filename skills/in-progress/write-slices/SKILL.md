@@ -55,6 +55,10 @@ Before filling fields, show one line per slice, `S2  feature  Parse the header l
 
 Wait, then apply corrections.
 
+**Unattended**: when no person can answer, because the harness runs headless (such as `claude -p` or `codex exec`) or gives you no way to ask, answer the three questions yourself from `spec/vision.md`, the spec and its `decisions.md`.
+Record each answer, with its reason, as one line in the file's top-level `unattended` list, and go on to step 5.
+Where step 1 or 2 would ask the user or end the turn, and on a product question those files cannot settle, write nothing and end with the question as your last message.
+
 ## 5. Write the file
 
 Write `spec/features/<slug>/slices.json`, beside the spec.
@@ -66,6 +70,7 @@ Tell the user to commit the feature folder: implement-slice reads it from git.
   "spec": "spec/features/<slug>/spec.md",
   "commit": "<sha>",
   "branch": "<branch>",
+  "unattended": ["<outline answer and its reason>"],
   "slices": [
     {
       "id": "S1",
@@ -81,6 +86,7 @@ Tell the user to commit the feature folder: implement-slice reads it from git.
 }
 ```
 
+- `unattended`: only when run unattended, one line per outline answer from step 4.
 - `id`: `S` plus a number, in outline order.
 - `kind`: `feature`, `prefactor`, `expand`, `migrate` or `contract`.
 - `behaviours`: numbers from the spec's Behaviour list, never text.
