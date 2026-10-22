@@ -157,7 +157,7 @@ A skill that reads tries the home first, then the fallbacks, so existing repos k
 | `.agents/coding-standards.md` | yes | codify | review-change, pr-brief, codify | `CODING_STANDARDS.md` |
 | `.agents/skills/verify/` | yes | make-verify | write-spec, write-slices, implement-slice | a harness skills folder |
 | `docs/manual/` | yes | make-verify, implement-slice | the verify skill | none |
-| `.scratch/` | no | verify runs, explore maps, interview trees, recohere reports | the skill that wrote it | none |
+| `.scratch/` | no | verify runs, explore maps, interview trees, recohere reports, faber runs | the skill or faber command that wrote it | none |
 
 Rules:
 
