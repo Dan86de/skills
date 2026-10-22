@@ -1,5 +1,18 @@
 # dan86de-skills
 
+## 0.12.0
+
+### Minor Changes
+
+- [`878dbe9`](https://github.com/Dan86de/skills/commit/878dbe9df3d6878bf619f5db44a258f8b8797ee6) Thanks [@Dan86de](https://github.com/Dan86de)! - Planning moves from `.scratch/` to a committed `spec/` folder, one `spec/features/<slug>/` per feature holding `decisions.md`, `spec.md` and `slices.json`.
+  interview now saves its decision record there, write-spec and write-slices write beside it, and implement-slice refuses a slices file that is not committed.
+  Readers look in `spec/glossary.md` and `.agents/coding-standards.md` first and keep the old root files as fallbacks.
+  `.agents/conventions.md` gains a project file contract listing every path, who writes it and who reads it.
+
+### Patch Changes
+
+- [#21](https://github.com/Dan86de/skills/pull/21) [`0600a10`](https://github.com/Dan86de/skills/commit/0600a104ac940b747173aaed198e85e85031bca8) Thanks [@Dan86de](https://github.com/Dan86de)! - The project file contract lists `AGENTS.md`, `CLAUDE.md` and the `.scratch/` line in `.gitignore`, so faber init may write them.
+
 ## 0.11.0
 
 ### Minor Changes
