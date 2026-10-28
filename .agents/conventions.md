@@ -97,7 +97,8 @@ The model never hand-writes what a script can generate.
 
 Rules that keep scripts harness-neutral:
 
-- Node 18 or newer, plain `.mjs`, zero dependencies. No `package.json` inside a skill, no install step.
+- Node 18 or newer, plain `.mjs`, zero dependencies.
+  No `package.json` inside a skill, no install step.
 - `SKILL.md` names the script relative to its own folder ("`scripts/map.mjs` sits next to this file"), never by an absolute or harness path.
 - A script validates its input before acting and exits non-zero with a readable message, so the model can fix the data and retry.
 - Output lands in the user's project, at a path from the project file contract below, never inside the skill folder.

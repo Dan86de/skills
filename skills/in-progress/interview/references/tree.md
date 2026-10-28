@@ -9,7 +9,8 @@ Mapping:
 
 - **Centre**: the subject.
 - **Branches**: round zero (pain, wedge, kill condition), then one per top-level decision, then the sweep once it starts.
-- **Children**: the decisions that hang off a decision. One with two prerequisites sits under one and `links` to the other.
+- **Children**: the decisions that hang off a decision.
+  One with two prerequisites sits under one and `links` to the other.
 - **`summary`**: the question while open, the chosen answer once settled.
 - **`body`**: the options, and for settled ones the rejected alternatives with their reasons.
 - **`ask`**: the question exactly as asked this round, frontier nodes only.

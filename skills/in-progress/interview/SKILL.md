@@ -21,7 +21,8 @@ Three fixed questions, asked once, never revisited:
 
 1. **The pain**: what observably goes wrong today, who hits it, how often, and how you know.
 2. **The wedge**: the smallest version still worth shipping.
-3. **The kill condition**: the claim this rests on that could be false. If it were false, would you still build this?
+3. **The kill condition**: the claim this rests on that could be false.
+   If it were false, would you still build this?
 
 If the kill condition is already false or the wedge collapses to nothing, the session ends in a **cut**, which is a success.
 Write up the premise, why it fails, and what would have to change, without shrinking it into a smaller version of the same idea.

@@ -25,10 +25,17 @@ Beside it, `agents/openai.yaml` with `allow_implicit_invocation: true`.
 
 Body sections:
 
-- **Start**: the command, the ready signal, and the run folder `.scratch/verify/<run>/` (`<run>` is a timestamp plus random characters), holding the run's own port and data, and none of the user's settings. Without isolation, refuse any instance the run did not start. List what a run cannot reach, and refuse it.
-- **Doctor**: a read-only check that the instance is up, this run's, the current build, signed in. Run it first and whenever something looks off.
+- **Start**: the command, the ready signal, and the run folder `.scratch/verify/<run>/` (`<run>` is a timestamp plus random characters), holding the run's own port and data, and none of the user's settings.
+  Without isolation, refuse any instance the run did not start.
+  List what a run cannot reach, and refuse it.
+- **Doctor**: a read-only check that the instance is up, this run's, the current build, signed in.
+  Run it first and whenever something looks off.
 - **Drive**: real commands, with handles that survive a redesign: roles, accessible names, labels, routes, flags.
-- **Proof bar**: drive the user's real path. Capture the action and the state it led to. Read side effects back. Drive every entry point the map lists. Fake only what production already puts behind a boundary.
+- **Proof bar**: drive the user's real path.
+  Capture the action and the state it led to.
+  Read side effects back.
+  Drive every entry point the map lists.
+  Fake only what production already puts behind a boundary.
 - **Evidence**: `evidence.md` in the run folder holds:
   - the commit and branch, and whether the tree was dirty
   - the verdict: **Done**, **Done, with n not driven** naming them, **Not done** with the failed checks, or **Done once the map changes in this PR**
@@ -36,10 +43,14 @@ Body sections:
 
   Each check is:
   - `pass`: the product does what the check says.
-  - `fail`: it does not, and the code is wrong. The note says what happened instead.
-  - `manual`: it does not, and the map is wrong, because the change meant this. The note says why, and the map changes in the same PR.
-  - `not driven`: it needs something a run cannot reach. The note names it, and the check stays with the user.
-- **Stop**: stop what this run started, by recorded pid, then confirm doctor says unfit. The run folder stays.
+  - `fail`: it does not, and the code is wrong.
+    The note says what happened instead.
+  - `manual`: it does not, and the map is wrong, because the change meant this.
+    The note says why, and the map changes in the same PR.
+  - `not driven`: it needs something a run cannot reach.
+    The note names it, and the check stays with the user.
+- **Stop**: stop what this run started, by recorded pid, then confirm doctor says unfit.
+  The run folder stays.
 
 Ship a helper script only for what one command cannot do reliably, such as keeping a browser page alive.
 It appends every call and its output to `transcript.log` in the run folder, reads state back through a logged command, refuses what the run must not reach, and records the real process pid.

@@ -17,8 +17,10 @@ Changed files:
 
 **Standards**, highest precedence first: `<standards-paths, or "none">`.
 **Agent instructions**, for coding rules only: `<agent-instruction-paths, or "none">`.
-**Baseline**: `<skill-dir>/references/baseline.md`. The repo's rules beat it wherever they disagree.
-**Checkers**: `<checker-config-paths>`. Skip anything they enforce.
+**Baseline**: `<skill-dir>/references/baseline.md`.
+The repo's rules beat it wherever they disagree.
+**Checkers**: `<checker-config-paths>`.
+Skip anything they enforce.
 
 Read any code you need: callers, neighbours, tests, and how the rest of the codebase already solves the problems this change solves.
 Every finding points at a line the diff touches, as `file:line` in the working-tree file.
