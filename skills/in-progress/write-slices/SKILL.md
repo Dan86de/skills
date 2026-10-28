@@ -92,7 +92,8 @@ Tell the user to commit the feature folder: implement-slice reads it from git.
 - `behaviours`: numbers from the spec's Behaviour list, never text.
 - `seam`: copied verbatim from Seams.
 - `blocked_by`: ids whose code must exist first.
-- `done.automated`: checks a machine runs. `done.manual`: what a person must look at.
+- `done.automated`: checks a machine runs.
+  `done.manual`: what a person must look at.
 - Non-feature kinds also carry `scope`: free text on what the slice touches and leaves alone.
 
 ## 6. Self-check

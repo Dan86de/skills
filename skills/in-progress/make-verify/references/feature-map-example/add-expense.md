@@ -10,12 +10,18 @@ A user records what they spent, on what and when, and it shows up at the top of 
 
 ## Steps
 
-- **Open the form from the button.** Run `drive click button "Add expense"`. A dialog named `New expense` opens with focus in `Amount`.
-- **Open the form from the keyboard.** Close the dialog, then run `drive press n`. The same dialog opens, and no `n` is typed anywhere.
-- **Refuse an empty amount.** Leave `Amount` empty and run `drive click button "Save"`. The dialog stays open and `Amount` reads `Enter an amount`.
-- **Save one.** Run `drive fill Amount 12.50`, `drive select Category Food`, `drive fill Note "Lunch"`, then `drive click button "Save"`. The first row of the `Expenses` table reads `Lunch`, `Food`, `12.50`.
-- **Add from the CLI.** Run `tally add 40 Travel --note "Train" --db <run folder>/tally.db --json`. It exits 0 and prints one object with `"category": "Travel"`.
-- **See it on the page.** Run `drive goto /expenses`. The first row reads `Train`, `Travel`, `40.00`.
+- **Open the form from the button.** Run `drive click button "Add expense"`.
+  A dialog named `New expense` opens with focus in `Amount`.
+- **Open the form from the keyboard.** Close the dialog, then run `drive press n`.
+  The same dialog opens, and no `n` is typed anywhere.
+- **Refuse an empty amount.** Leave `Amount` empty and run `drive click button "Save"`.
+  The dialog stays open and `Amount` reads `Enter an amount`.
+- **Save one.** Run `drive fill Amount 12.50`, `drive select Category Food`, `drive fill Note "Lunch"`, then `drive click button "Save"`.
+  The first row of the `Expenses` table reads `Lunch`, `Food`, `12.50`.
+- **Add from the CLI.** Run `tally add 40 Travel --note "Train" --db <run folder>/tally.db --json`.
+  It exits 0 and prints one object with `"category": "Travel"`.
+- **See it on the page.** Run `drive goto /expenses`.
+  The first row reads `Train`, `Travel`, `40.00`.
 
 ## Behind it
 

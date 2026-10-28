@@ -83,7 +83,8 @@ Watching, one PR only:
 Sources are PR numbers or `stated <date>`; an empty section reads `- none`; an empty `Proposed` ends the run.
 Otherwise ask exactly this and wait:
 
-> Approve, edit, or drop each numbered item. Reply with the numbers and what to do with each.
+> Approve, edit, or drop each numbered item.
+> Reply with the numbers and what to do with each.
 
 ## 7. Write what was approved
 

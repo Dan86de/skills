@@ -7,7 +7,8 @@ Pass everything below the line to the assessor subagent, with every `<placeholde
 Decide how dangerous one branch is to merge, so a reviewer knows where to spend attention.
 You did not write it; the author already believes it is safe, and your job is to check.
 
-- **Repo**: `<repo-path>`. Run every command there.
+- **Repo**: `<repo-path>`.
+  Run every command there.
 - **Change**: `git diff <base>..HEAD` and `git log --format='%h %s%n%n%b' <base>..HEAD`.
 - **Intent**: `<spec-path, or "none">`: what the change was meant to do and leave alone.
 - **One-way rules**: `<baseline-path>`, plus the `## One-way doors` section of `<files-with-that-section, or "none">`.

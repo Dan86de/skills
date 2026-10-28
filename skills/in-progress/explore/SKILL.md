@@ -29,7 +29,8 @@ Branches are angles the lens needs: vocabulary, laws, tools and measures, failur
 - Three to five highest-leverage nodes, across branches, are `suggested`.
 - Suggested and non-obvious nodes add a `body` (definition, then a concrete example from the user's world, with numbers) and an `ask` (one question for their situation).
 - Three to eight cross-branch `links`, only where one node changes how you read the other.
-- Check laws, numbers, names and attributions against a real source and list it in `sources`. Generalise or cut what you cannot check.
+- Check laws, numbers, names and attributions against a real source and list it in `sources`.
+  Generalise or cut what you cannot check.
 
 ## 3. Hand over
 
