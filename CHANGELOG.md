@@ -1,5 +1,11 @@
 # dan86de-skills
 
+## 0.12.1
+
+### Patch Changes
+
+- [#26](https://github.com/Dan86de/skills/pull/26) [`44646ee`](https://github.com/Dan86de/skills/commit/44646ee549b95bd6505123142e2a9d03dd586b90) Thanks [@Dan86de](https://github.com/Dan86de)! - Shorten every skill description: model-invoked skills keep what they do plus a few distinctive triggers, user-invoked skills get one human-facing line.
+
 ## 0.12.0
 
 ### Minor Changes
