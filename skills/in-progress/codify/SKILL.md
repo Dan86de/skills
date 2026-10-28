@@ -1,6 +1,6 @@
 ---
 name: codify
-description: Turn review feedback that keeps coming back into standards entries, one-way doors and checker rules, proposed for your approval and written only once you approve.
+description: Turn recurring review feedback into coding standards and checker rules, after your approval.
 disable-model-invocation: true
 ---
 

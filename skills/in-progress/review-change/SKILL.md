@@ -1,6 +1,6 @@
 ---
 name: review-change
-description: Review a change against the repo's own coding standards in a fresh context, fix what is safe to fix in the working tree, and report the rest as a fixed-shape block. Use when a change is about to be committed or a branch is about to become a PR, when the user says "review this", "review my changes", "check this against our standards", or "make it good", and when another skill needs a standards pass before it commits.
+description: Review a change against the repo's own coding standards in a fresh context and fix what is safe. Use before a commit or PR, when the user says "review this", or another skill needs a standards pass.
 ---
 
 The implementer makes it work, this skill makes it good, in a context that did not write it.

@@ -1,6 +1,6 @@
 ---
 name: recohere
-description: Find where a codebase does the same thing more than one way, rank each by how much it slows the next change, and finish the migration you pick.
+description: Find where the codebase does one job several ways and finish the migration you pick.
 disable-model-invocation: true
 ---
 

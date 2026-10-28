@@ -1,6 +1,6 @@
 ---
 name: make-verify
-description: Generate this project's verify skill, which starts the product, drives it the way a user does, and records whether each check passed.
+description: Generate this project's verify skill, which drives the product like a user.
 disable-model-invocation: true
 ---
 

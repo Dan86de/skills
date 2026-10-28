@@ -1,6 +1,6 @@
 ---
 name: pr-brief
-description: Write a branch's PR body that tells a reviewer how much attention it needs, with a visual summary, harvested evidence and a fresh-context one-way or two-way door call, then put it and an attention label on the branch's PR. Use when a branch is ready for review, when the user says "write the PR body", "update the PR description", "how risky is this PR", or "is this ready to merge", and when another skill closes a branch.
+description: Write a PR body that tells reviewers how much attention the branch needs, and label the PR. Use when a branch is ready for review, the user asks to write the PR description or how risky a PR is, or another skill closes a branch.
 ---
 
 Review every one-way door; skim two-way doors with a localized blast radius.

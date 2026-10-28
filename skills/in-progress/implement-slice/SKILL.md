@@ -1,6 +1,6 @@
 ---
 name: implement-slice
-description: Build one ready slice from a write-slices file, prove it with the project's verify skill, and commit it to the spec's branch and draft PR.
+description: Build, verify and commit one ready slice from a slices file.
 disable-model-invocation: true
 ---
 
