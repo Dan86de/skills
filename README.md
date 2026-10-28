@@ -56,7 +56,8 @@ _Nothing here yet._
 Symlinks every skill into all five local harness skill directories, so an edit in this repo is live in every agent immediately.
 
 Conventions for writing a skill live in [.agents/conventions.md](./.agents/conventions.md).
-Repo rules live in [CLAUDE.md](./CLAUDE.md), which `AGENTS.md` symlinks to.
+Repo rules live in [AGENTS.md](./AGENTS.md), which `.claude/CLAUDE.md` imports for Claude Code.
+It is not a root `CLAUDE.md` because the plugin validator rejects one at the plugin root.
 
 ## License
 
