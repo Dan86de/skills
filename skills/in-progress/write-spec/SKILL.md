@@ -13,10 +13,6 @@ If an argument names a file, issue, or URL, read it in full first.
 With no argument, propose the one `spec/features/<slug>/decisions.md` that has no `spec.md` beside it, or ask.
 Read `spec/vision.md` and `spec/glossary.md` if they exist.
 
-**Unattended**: when no person can answer, because the harness runs headless (such as `claude -p` or `codex exec`) or gives you no way to ask, do not wait for a reply.
-Take each choice the steps below would put to the user from `spec/vision.md` and the decision record, and write it, with its reason, into the spec section it belongs to.
-With no decision record, or on a product question those two cannot settle, write nothing and end with the question as your last message.
-
 ## 1. Ground it in the code
 
 Run three searches, as parallel subagents if your harness has them:

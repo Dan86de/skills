@@ -146,9 +146,9 @@ A skill that reads tries the home first, then the fallbacks, so existing repos k
 
 | Path | Committed | Written by | Read by | Fallbacks |
 | --- | --- | --- | --- | --- |
-| `AGENTS.md` | yes | faber init, the user | review-change, every harness but Claude Code | none |
-| `CLAUDE.md` | yes | faber init, the user | review-change, Claude Code | none |
-| `.gitignore` (the `.scratch/` line) | yes | faber init | git | none |
+| `AGENTS.md` | yes | the user | review-change, every harness but Claude Code | none |
+| `CLAUDE.md` | yes | the user | review-change, Claude Code | none |
+| `.gitignore` (the `.scratch/` line) | yes | the user | git | none |
 | `spec/vision.md` | yes | the user | interview, write-spec | none |
 | `spec/glossary.md` | yes | the user | interview, write-spec, pr-brief, recohere | `GLOSSARY.md`, `CONTEXT.md` |
 | `spec/features/<slug>/decisions.md` | yes | interview | write-spec | none |
@@ -157,7 +157,7 @@ A skill that reads tries the home first, then the fallbacks, so existing repos k
 | `.agents/coding-standards.md` | yes | codify | review-change, pr-brief, codify | `CODING_STANDARDS.md` |
 | `.agents/skills/verify/` | yes | make-verify | write-spec, write-slices, implement-slice | a harness skills folder |
 | `docs/manual/` | yes | make-verify, implement-slice | the verify skill | none |
-| `.scratch/` | no | verify runs, explore maps, interview trees, recohere reports, faber runs | the skill or faber command that wrote it | none |
+| `.scratch/` | no | verify runs, explore maps, interview trees, recohere reports | the skill that wrote it | none |
 
 Rules:
 
@@ -167,5 +167,4 @@ Rules:
 - `<slug>` is lowercase kebab-case, one per feature, and names the feature folder and the branch `slices/<slug>`.
 - Skills never write `spec/vision.md` or `spec/glossary.md`: they are the user's, and a skill proposes changes in its reply.
 - A skill never invents a new top-level path; add it to this table first.
-- faber init creates each missing path it writes from a bare template, skips a home path whose fallback exists, and never edits an existing file except appending `.scratch/` to `.gitignore`.
 - `CLAUDE.md` imports `AGENTS.md` with `@AGENTS.md`, because Claude Code does not read `AGENTS.md` on its own.
