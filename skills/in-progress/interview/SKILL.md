@@ -1,6 +1,6 @@
 ---
 name: interview
-description: Settle every decision behind a plan before anything gets built, in rounds. Opens with a kill condition that can end in a cut, closes with a decision record. Use when a plan, feature, or design needs pressure-testing before a spec exists, when the user says "interview me", "grill me", "pressure-test this", "poke holes in this", or "before we plan this", and when another skill needs the decisions settled before it writes anything. Draws the design tree as a page when it grows or when asked to "show me the tree".
+description: Pressure-test a plan in rounds until every decision is settled, ending in a decision record. Use before a spec exists, when the user says "interview me" or "grill me", or another skill needs decisions settled first.
 ---
 
 Interview the user relentlessly until every load-bearing decision is settled, then emit a decision record and stop.

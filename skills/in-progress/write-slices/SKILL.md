@@ -1,6 +1,6 @@
 ---
 name: write-slices
-description: Decompose a spec written by write-spec into vertical slices with blocking edges, one JSON file written beside it as spec/features/<slug>/slices.json.
+description: Split a written spec into vertical slices with blocking edges.
 disable-model-invocation: true
 ---
 

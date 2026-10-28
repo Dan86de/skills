@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Map a topic as an interactive mind map so the user finds what they did not know to ask, then grow it branch by branch on request. Writes a map file and renders it to one HTML page with a script, no hand-written HTML. Use when the user wants to explore, map, or get oriented in a topic, asks "what am I missing", "what don't I know about X", "give me the landscape of X", "map this out", or says "go deeper on" a node of an existing map, and when another skill needs a tree drawn as a page.
+description: Map a topic as an interactive mind map to surface what the user didn't know to ask, and grow branches on request. Use when the user wants to get oriented in a topic, asks "what am I missing", says "go deeper on" a node, or another skill needs a tree drawn as a page.
 ---
 
 You write the map as JSON; `scripts/map.mjs` (next to this file, Node 18+) checks and renders it:

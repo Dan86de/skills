@@ -1,6 +1,6 @@
 ---
 name: write-spec
-description: Turn a settled plan or decision record into a spec, grounded in the codebase and written to spec/features/<slug>/spec.md.
+description: Turn a settled plan or decision record into a spec grounded in the codebase.
 disable-model-invocation: true
 ---
 
