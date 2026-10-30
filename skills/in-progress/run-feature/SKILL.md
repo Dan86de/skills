@@ -4,15 +4,15 @@ description: Loop implement-slice headlessly in a dedicated worktree until every
 disable-model-invocation: true
 ---
 
-Take a feature whose spec and slices are committed all the way to a ready PR with one kick.
-The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency Node script that creates a worktree on `slices/<slug>`, runs one fresh headless harness session per slice, and reads progress only from git trailers and the slices file.
+Take a feature whose decision record is committed all the way to a ready PR with one kick.
+The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency Node script that creates a worktree on `slices/<slug>`, writes a missing spec or slices file headlessly first, runs one fresh headless harness session per slice, and reads progress only from git trailers and the slices file.
 
 ## Steps
 
 1. **Find the slug**: the one given, or the only feature folder under `spec/features/`, or ask.
    The target repo is the current project unless the user names another.
-2. **Check the inputs**: `spec/features/<slug>/slices.json` and the spec it names are committed.
-   With them missing, tell the user to run the writing skills first and end the turn.
+2. **Check the input**: `spec/features/<slug>/decisions.md`, or an already written `spec.md`, is committed.
+   With both missing, tell the user to settle the decisions first and end the turn.
 3. **Kick the run**: from the target repo's root, run `node scripts/run.mjs <slug>` (the script path is relative to this skill's folder) and stream its output.
    Do not parse the harness sessions' output for state; the script already decides from git alone.
 4. **Report the end state**: the exit code, the slices landed, the worktree path, and the PR.
@@ -20,6 +20,8 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 ## What the script does
 
 - Creates the worktree as a sibling of the repo, named `<repo>-slices-<slug>`, on the branch `slices/<slug>`, so the main checkout stays untouched.
+- Halts before any harness session when the project has no verify skill, naming make-verify.
+- Writes a missing spec or slices file through a headless write-spec or write-slices session and commits it to the slices branch before the loop starts.
 - Runs each slice attempt as a fresh `claude -p "/implement-slice spec/features/<slug>/"` session with `--permission-mode acceptEdits` and the Bash allowlist from the project's committed settings.
 - Between iterations it decides from `git log` trailers and `slices.json` alone, never from session stdout.
 - After the last slice it runs one more session so implement-slice closes the branch and marks the PR ready.

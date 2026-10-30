@@ -1,6 +1,6 @@
 // Seam tests for run.mjs: drive the runner's process boundary against a
 // throwaway target repo with a stub harness and gh on PATH.
-// Covers slices S1 through S5 of spec/features/run-feature/spec.md.
+// Covers slices S1 through S6 of spec/features/run-feature/spec.md.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -23,6 +23,14 @@ function git(repo, ...args) {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
 
+const SLICES = {
+  spec: "spec/features/demo/spec.md",
+  slices: [
+    { id: "S1", title: "First slice", blocked_by: [], autonomy: "afk" },
+    { id: "S2", title: "Second slice", blocked_by: ["S1"], autonomy: "afk" },
+  ],
+};
+
 const CLAUDE_STUB = `#!/usr/bin/env node
 // Stands in for a headless implement-slice session: commits the next ready
 // slice's trailer (Slice-Pending for a hitl slice) and pushes, or marks the
@@ -33,6 +41,18 @@ const { execFileSync } = require("node:child_process");
 appendFileSync(process.env.STUB_CLAUDE_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
 // Misleading noise: a runner parsing harness stdout for state would halt here.
 console.log("HARNESS NOISE: fatal, 0 slices done, Slice=[S9], halting run");
+const prompt = process.argv[3] || "";
+if (prompt.startsWith("/write-spec")) {
+  require("node:fs").writeFileSync("spec/features/demo/spec.md", "# demo\\n");
+  process.exit(0);
+}
+if (prompt.startsWith("/write-slices")) {
+  require("node:fs").writeFileSync(
+    "spec/features/demo/slices.json",
+    JSON.stringify(${JSON.stringify(SLICES)}, null, 2),
+  );
+  process.exit(0);
+}
 const git = (...a) => execFileSync("git", a, { encoding: "utf8" }).trim();
 const slices = JSON.parse(readFileSync("spec/features/demo/slices.json", "utf8")).slices;
 const read = (key) =>
@@ -65,13 +85,12 @@ const { appendFileSync } = require("node:fs");
 appendFileSync(process.env.STUB_OSA_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
 `;
 
-const SLICES = {
-  spec: "spec/features/demo/spec.md",
-  slices: [
-    { id: "S1", title: "First slice", blocked_by: [], autonomy: "afk" },
-    { id: "S2", title: "Second slice", blocked_by: ["S1"], autonomy: "afk" },
-  ],
-};
+// A session whose write-spec pre-step produces nothing, for the
+// "pre-step failed" halt and its banner.
+const PRESTEP_FAIL_STUB = CLAUDE_STUB.replace(
+  'require("node:fs").writeFileSync("spec/features/demo/spec.md", "# demo\\n");',
+  "",
+);
 
 const HITL_SLICES = {
   spec: SLICES.spec,
@@ -91,7 +110,8 @@ const MANY_SLICES = {
   })),
 };
 
-function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES) {
+function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
+  const { specFiles = true, verifySkill = true, decisionsFile = true } = opts;
   const tmp = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
   const origin = path.join(tmp, "origin.git");
   const repo = path.join(tmp, "repo");
@@ -101,11 +121,20 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES) {
   git(repo, "config", "user.email", "test@example.com");
 
   mkdirSync(path.join(repo, "spec", "features", "demo"), { recursive: true });
-  writeFileSync(path.join(repo, "spec", "features", "demo", "spec.md"), "# demo\n");
-  writeFileSync(
-    path.join(repo, "spec", "features", "demo", "slices.json"),
-    JSON.stringify(slices, null, 2),
-  );
+  if (decisionsFile) {
+    writeFileSync(path.join(repo, "spec", "features", "demo", "decisions.md"), "# decisions\n");
+  }
+  if (specFiles) {
+    writeFileSync(path.join(repo, "spec", "features", "demo", "spec.md"), "# demo\n");
+    writeFileSync(
+      path.join(repo, "spec", "features", "demo", "slices.json"),
+      JSON.stringify(slices, null, 2),
+    );
+  }
+  if (verifySkill) {
+    mkdirSync(path.join(repo, ".agents", "skills", "verify"), { recursive: true });
+    writeFileSync(path.join(repo, ".agents", "skills", "verify", "SKILL.md"), "# verify\n");
+  }
   mkdirSync(path.join(repo, ".claude"), { recursive: true });
   writeFileSync(
     path.join(repo, ".claude", "settings.json"),
@@ -323,6 +352,72 @@ if (attempts === 1) {
   });
 });
 
+describe("run.mjs runs the pre-steps headlessly and gates on the verify skill", () => {
+  // One run from a fixture holding only a committed decisions.md.
+  let fixture;
+  let result;
+  let claudeLog;
+  let ghLog;
+
+  before(() => {
+    fixture = makeFixture(CLAUDE_STUB, SLICES, { specFiles: false });
+    ({ result, claudeLog, ghLog } = runRunner(fixture));
+  });
+
+  it("one command takes a committed decisions.md with no spec to a ready PR, exit 0", () => {
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(landedTrailers(fixture.repo), ["S1", "S2"]);
+    assert.match(readFileSync(ghLog, "utf8"), /pr ready/);
+    assert.ok(!existsSync(fixture.worktree), "worktree should be removed");
+  });
+
+  it("a missing spec or slices file is written and committed headlessly before the loop", () => {
+    const prompts = readFileSync(claudeLog, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)[1]);
+    assert.equal(prompts.length, 5, JSON.stringify(prompts));
+    assert.match(prompts[0], /^\/write-spec spec\/features\/demo\/decisions\.md$/);
+    assert.match(prompts[1], /^\/write-slices spec\/features\/demo\/spec\.md$/);
+    // Oldest commits on the branch are the two pre-step commits.
+    const subjects = git(
+      fixture.repo,
+      "log",
+      "--format=%s",
+      "origin/main..origin/slices/demo",
+    ).split("\n");
+    assert.deepEqual(subjects.slice(-2), [
+      "spec: write demo slices.json headlessly",
+      "spec: write demo spec.md headlessly",
+    ]);
+    assert.equal(git(fixture.repo, "show", "origin/slices/demo:spec/features/demo/spec.md"), "# demo");
+  });
+
+  it("a pre-step session that writes nothing halts the run as pre-step failed", () => {
+    const failing = makeFixture(PRESTEP_FAIL_STUB, SLICES, { specFiles: false });
+    const run = runRunner(failing);
+    assert.equal(run.result.status, 2, run.result.stderr);
+    assert.match(run.result.stderr, /\/write-spec session did not write/);
+    assert.ok(existsSync(failing.worktree), "worktree should be kept");
+  });
+
+  it("a missing decisions.md with no spec refuses the kick with exit 1", () => {
+    const bare = makeFixture(CLAUDE_STUB, SLICES, { specFiles: false, decisionsFile: false });
+    const { result } = runRunner(bare);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /decisions\.md is missing/);
+  });
+
+  it("with the verify skill removed, the runner halts naming make-verify before any session", () => {
+    const gated = makeFixture(CLAUDE_STUB, SLICES, { verifySkill: false });
+    const run = runRunner(gated);
+    assert.equal(run.result.status, 2, run.result.stderr);
+    assert.match(run.result.stderr, /make-verify/);
+    assert.equal(readFileSync(run.claudeLog, "utf8"), "", "no harness session may start");
+    assert.ok(existsSync(gated.worktree), "worktree should be kept");
+  });
+});
+
 describe("run.mjs resumes from git state on re-kick", () => {
   it("re-running the same command after a halt and a human fix completes the rest", () => {
     // First kick: every S1 attempt fails, so the run halts and keeps the
@@ -414,6 +509,8 @@ describe("run.mjs fires one end-state banner", () => {
       ["awaiting sign-off", makeFixture(CLAUDE_STUB, HITL_SLICES)],
       ["iteration ceiling", makeFixture(CLAUDE_STUB, MANY_SLICES)],
       ["worktree not removed", makeFixture(dirtyCloseStub)],
+      ["no verify skill", makeFixture(CLAUDE_STUB, SLICES, { verifySkill: false })],
+      ["pre-step failed", makeFixture(PRESTEP_FAIL_STUB, SLICES, { specFiles: false })],
     ];
     for (const [state, fixture] of cases) {
       const { osaLog } = runRunner(fixture);

@@ -256,23 +256,41 @@ function quoteArg(arg) {
 
 // The one place the harness is invoked, so a second harness stays additive.
 // stdout and stderr stream straight to the terminal and are never captured.
-function runHarnessSession({ worktree, slug, allowlist, iteration, settingsFile }) {
-  const args = [
-    "-p",
-    `/implement-slice spec/features/${slug}/`,
-    "--permission-mode",
-    "acceptEdits",
-    "--settings",
-    settingsFile,
-  ];
+function runHarnessSession({ worktree, prompt, allowlist, label, settingsFile }) {
+  const args = ["-p", prompt, "--permission-mode", "acceptEdits", "--settings", settingsFile];
   if (allowlist.length > 0) args.push("--allowedTools", allowlist.join(","));
-  log(`iteration ${iteration}: claude ${args.map(quoteArg).join(" ")}`);
+  log(`${label}: claude ${args.map(quoteArg).join(" ")}`);
   const result = spawnSync("claude", args, {
     cwd: worktree,
     stdio: ["ignore", "inherit", "inherit"],
   });
   if (result.error) fail(`could not start claude: ${result.error.message}`);
-  log(`iteration ${iteration}: session ended with exit code ${result.status}`);
+  log(`${label}: session ended with exit code ${result.status}`);
+}
+
+// The verify skill the slices gate on, at its contract home or a harness
+// skills folder.
+function hasVerifySkill(worktree) {
+  return [".agents/skills/verify/SKILL.md", ".claude/skills/verify/SKILL.md"].some((candidate) =>
+    existsSync(path.join(worktree, candidate)),
+  );
+}
+
+// One headless pre-step: have a writing skill produce a missing spec file,
+// then commit it, so the loop starts from committed state as always.
+function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
+  const relative = path.join("spec", "features", slug, file);
+  const target = path.join(worktree, relative);
+  if (existsSync(target)) return;
+  const skill = prompt.split(" ")[0];
+  session(prompt, `pre-step ${skill.slice(1)}`);
+  if (!existsSync(target)) {
+    halt("pre-step failed", `the ${skill} session did not write ${target}`, worktree);
+  }
+  git(worktree, ["add", relative]);
+  git(worktree, ["commit", "--quiet", "-m", `spec: write ${slug} ${file} headlessly`]);
+  if (hasOrigin) git(worktree, ["push", "--quiet", "origin", "HEAD"]);
+  log(`pre-step committed ${relative}`);
 }
 
 function main() {
@@ -304,10 +322,52 @@ function main() {
     }
   }
 
-  const slices = readSlices(worktree, slug);
+  if (!hasVerifySkill(worktree)) {
+    halt(
+      "no verify skill",
+      "no verify skill at .agents/skills/verify; run make-verify in the project, commit it, then re-kick",
+      worktree,
+    );
+  }
+
   const allowlist = bashAllowlist(worktree);
   const { dir: denialDir, settingsFile, logFile } = denialChannel(slug);
   log(`denial log ${logFile}`);
+
+  const session = (prompt, label) => {
+    runHarnessSession({ worktree, prompt, allowlist, label, settingsFile });
+    const denied = deniedTools(logFile);
+    if (denied.length > 0) {
+      halt(
+        "permission denied",
+        `permission denied for ${denied.join(", ")} during ${label}; grow the project's allowlist or run it attended`,
+        worktree,
+      );
+    }
+  };
+
+  const featureDir = path.join(worktree, "spec", "features", slug);
+  if (!existsSync(path.join(featureDir, "spec.md")) && !existsSync(path.join(featureDir, "decisions.md"))) {
+    fail(`spec/features/${slug}/decisions.md is missing; settle the decisions and commit them first`);
+  }
+  runPreStep({
+    worktree,
+    slug,
+    file: "spec.md",
+    prompt: `/write-spec spec/features/${slug}/decisions.md`,
+    session,
+    hasOrigin,
+  });
+  runPreStep({
+    worktree,
+    slug,
+    file: "slices.json",
+    prompt: `/write-slices spec/features/${slug}/spec.md`,
+    session,
+    hasOrigin,
+  });
+
+  const slices = readSlices(worktree, slug);
 
   let iteration = 0;
   let closeRan = false;
@@ -352,16 +412,7 @@ function main() {
     const expected = states.ready
       .map((slice) => slice.id)
       .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))[0];
-    runHarnessSession({ worktree, slug, allowlist, iteration, settingsFile });
-
-    const denied = deniedTools(logFile);
-    if (denied.length > 0) {
-      halt(
-        "permission denied",
-        `permission denied for ${denied.join(", ")} in iteration ${iteration}; grow the project's allowlist or run the slice attended`,
-        worktree,
-      );
-    }
+    session(`/implement-slice spec/features/${slug}/`, `iteration ${iteration}`);
 
     if (allDone) {
       closeRan = true;
