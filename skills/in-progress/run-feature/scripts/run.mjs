@@ -4,13 +4,22 @@
 // State is read only from git trailers and slices.json, never from harness stdout.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
+// Exit codes: 0 clean completion, 1 bad input or environment, 2 halt.
+// A halt always keeps the worktree in place so a human can cd in and fix.
 function fail(message) {
   process.stderr.write(`run-feature: ${message}\n`);
   process.exit(1);
+}
+
+function halt(message, worktree) {
+  process.stderr.write(`run-feature: halt: ${message}\n`);
+  process.stderr.write(`run-feature: worktree kept at ${worktree}\n`);
+  process.exit(2);
 }
 
 function log(message) {
@@ -81,6 +90,17 @@ function addWorktree(repo, slug, base) {
   return worktree;
 }
 
+// Clean completion settles the worktree; a failed removal means the tree is
+// not actually clean, so it is a halt, not a success.
+function removeWorktree(repo, worktree) {
+  const result = spawnSync("git", ["-C", repo, "worktree", "remove", worktree], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    halt(`could not remove the worktree: ${result.stderr.trim()}`, worktree);
+  }
+}
+
 function readSlices(worktree, slug) {
   const file = path.join(worktree, "spec", "features", slug, "slices.json");
   if (!existsSync(file)) fail(`${file} not found; write and commit the slices file first`);
@@ -143,18 +163,59 @@ function sliceStates(worktree, base, slices) {
   return { done, pending, ready };
 }
 
+// A headless session cannot show a permission prompt, so a tool call that is
+// not allowlisted raises PermissionRequest and stays denied when no hook
+// approves it. This injected hook writes each request to a log file outside
+// the worktree, which is how a denial reaches the runner without parsing
+// harness stdout.
+function denialChannel(slug) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), `run-feature-${slug}-`));
+  const logFile = path.join(dir, "denials.jsonl");
+  const settingsFile = path.join(dir, "settings.json");
+  if (logFile.includes("'")) {
+    fail(`temp dir ${dir} contains a single quote, which would break the denial hook`);
+  }
+  const command = `cat >> '${logFile}'; echo >> '${logFile}'`;
+  writeFileSync(
+    settingsFile,
+    JSON.stringify({
+      hooks: {
+        PermissionRequest: [{ hooks: [{ type: "command", command }] }],
+      },
+    }),
+  );
+  return { dir, settingsFile, logFile };
+}
+
+function deniedTools(logFile) {
+  if (!existsSync(logFile)) return [];
+  const names = [];
+  for (const line of readFileSync(logFile, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      names.push(entry.tool_name ?? "unknown tool");
+    } catch {
+      names.push("unknown tool");
+    }
+  }
+  return names;
+}
+
 function quoteArg(arg) {
   return /[\s"]/.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg;
 }
 
 // The one place the harness is invoked, so a second harness stays additive.
 // stdout and stderr stream straight to the terminal and are never captured.
-function runHarnessSession({ worktree, slug, allowlist, iteration }) {
+function runHarnessSession({ worktree, slug, allowlist, iteration, settingsFile }) {
   const args = [
     "-p",
     `/implement-slice spec/features/${slug}/`,
     "--permission-mode",
     "acceptEdits",
+    "--settings",
+    settingsFile,
   ];
   if (allowlist.length > 0) args.push("--allowedTools", allowlist.join(","));
   log(`iteration ${iteration}: claude ${args.map(quoteArg).join(" ")}`);
@@ -177,6 +238,8 @@ function main() {
 
   const slices = readSlices(worktree, slug);
   const allowlist = bashAllowlist(worktree);
+  const { dir: denialDir, settingsFile, logFile } = denialChannel(slug);
+  log(`denial log ${logFile}`);
 
   const hasOrigin = gitOk(repo, ["remote", "get-url", "origin"]);
 
@@ -188,17 +251,28 @@ function main() {
     const allDone = slices.every((slice) => states.done.has(slice.id));
 
     if (allDone && closeRan) {
-      log(`all ${slices.length} slices done, branch closed, worktree kept at ${worktree}`);
+      removeWorktree(repo, worktree);
+      rmSync(denialDir, { recursive: true, force: true });
+      log(`all ${slices.length} slices done, branch closed, worktree removed`);
       process.exit(0);
     }
     if (!allDone && states.ready.length === 0) {
-      fail(
+      halt(
         `nothing is ready: done [${[...states.done].join(", ")}], pending [${[...states.pending].join(", ")}]`,
+        worktree,
       );
     }
 
     iteration++;
-    runHarnessSession({ worktree, slug, allowlist, iteration });
+    runHarnessSession({ worktree, slug, allowlist, iteration, settingsFile });
+
+    const denied = deniedTools(logFile);
+    if (denied.length > 0) {
+      halt(
+        `permission denied for ${denied.join(", ")} in iteration ${iteration}; grow the project's allowlist or run the slice attended`,
+        worktree,
+      );
+    }
 
     if (allDone) {
       closeRan = true;
@@ -208,7 +282,7 @@ function main() {
     // done still counts even though the combined count stays constant.
     const after = sliceStates(worktree, base, slices);
     if (after.done.size <= states.done.size && after.pending.size <= states.pending.size) {
-      fail(`no progress: iteration ${iteration} added no slice trailer on slices/${slug}`);
+      halt(`no progress: iteration ${iteration} added no slice trailer on slices/${slug}`, worktree);
     }
   }
 }

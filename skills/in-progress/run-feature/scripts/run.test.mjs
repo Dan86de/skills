@@ -1,10 +1,17 @@
 // Seam tests for run.mjs: drive the runner's process boundary against a
 // throwaway target repo with a stub harness and gh on PATH.
-// Covers slice S1 of spec/features/run-feature/spec.md.
+// Covers slices S1 and S2 of spec/features/run-feature/spec.md.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,7 +58,7 @@ const SLICES = {
   ],
 };
 
-function makeFixture() {
+function makeFixture(claudeStub = CLAUDE_STUB) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
   const origin = path.join(tmp, "origin.git");
   const repo = path.join(tmp, "repo");
@@ -78,12 +85,31 @@ function makeFixture() {
 
   const bin = path.join(tmp, "bin");
   mkdirSync(bin);
-  writeFileSync(path.join(bin, "claude"), CLAUDE_STUB);
+  writeFileSync(path.join(bin, "claude"), claudeStub);
   writeFileSync(path.join(bin, "gh"), GH_STUB);
   chmodSync(path.join(bin, "claude"), 0o755);
   chmodSync(path.join(bin, "gh"), 0o755);
 
-  return { tmp, repo, bin };
+  const worktree = path.join(tmp, "repo-slices-demo");
+  return { tmp, repo, bin, worktree };
+}
+
+function runRunner(fixture) {
+  const claudeLog = path.join(fixture.tmp, "claude.log");
+  const ghLog = path.join(fixture.tmp, "gh.log");
+  writeFileSync(claudeLog, "");
+  writeFileSync(ghLog, "");
+  const result = spawnSync("node", [RUNNER, "demo"], {
+    cwd: fixture.repo,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${fixture.bin}:${process.env.PATH}`,
+      STUB_CLAUDE_LOG: claudeLog,
+      STUB_GH_LOG: ghLog,
+    },
+  });
+  return { result, claudeLog, ghLog };
 }
 
 describe("run.mjs loops slices to a ready PR in a worktree", () => {
@@ -96,20 +122,7 @@ describe("run.mjs loops slices to a ready PR in a worktree", () => {
   before(() => {
     fixture = makeFixture();
     headBefore = git(fixture.repo, "rev-parse", "HEAD");
-    claudeLog = path.join(fixture.tmp, "claude.log");
-    ghLog = path.join(fixture.tmp, "gh.log");
-    writeFileSync(claudeLog, "");
-    writeFileSync(ghLog, "");
-    result = spawnSync("node", [RUNNER, "demo"], {
-      cwd: fixture.repo,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${fixture.bin}:${process.env.PATH}`,
-        STUB_CLAUDE_LOG: claudeLog,
-        STUB_GH_LOG: ghLog,
-      },
-    });
+    ({ result, claudeLog, ghLog } = runRunner(fixture));
   });
 
   it("one kick lands every afk slice trailer on the slices branch and marks the PR ready", () => {
@@ -166,5 +179,57 @@ describe("run.mjs loops slices to a ready PR in a worktree", () => {
       "origin/main..origin/slices/demo",
     );
     assert.ok(!trailers.includes("S9"));
+  });
+
+  it("removes the worktree on clean completion, leaving the branch and PR intact", () => {
+    assert.equal(result.status, 0);
+    assert.ok(!existsSync(fixture.worktree), "worktree should be removed");
+    assert.ok(git(fixture.repo, "rev-parse", "origin/slices/demo"));
+    assert.match(readFileSync(ghLog, "utf8"), /pr ready/);
+  });
+});
+
+// A stub session that burns an iteration without landing a trailer.
+const IDLE_STUB = `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+appendFileSync(process.env.STUB_CLAUDE_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+console.log("session wandered and gave up without committing");
+`;
+
+// Simulates a session whose Bash call is not allowlisted: Claude Code runs
+// the PermissionRequest hooks from --settings, no hook approves, the call
+// stays denied, and the session gives up without committing.
+const DENIAL_STUB = `#!/usr/bin/env node
+const { appendFileSync, readFileSync } = require("node:fs");
+const { execSync } = require("node:child_process");
+appendFileSync(process.env.STUB_CLAUDE_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+const settingsPath = process.argv[process.argv.indexOf("--settings") + 1];
+const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+const command = settings.hooks.PermissionRequest[0].hooks[0].command;
+const request = JSON.stringify({
+  hook_event_name: "PermissionRequest",
+  tool_name: "Bash",
+  tool_input: { command: "curl https://example.com" },
+});
+execSync(command, { input: request });
+console.log("Bash call denied; cannot continue");
+`;
+
+describe("run.mjs halts keep the worktree and exit non-zero", () => {
+  it("an iteration with no new slice trailer halts the run as no progress", () => {
+    const fixture = makeFixture(IDLE_STUB);
+    const { result, claudeLog } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /no progress/);
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+    assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 1);
+  });
+
+  it("a session's non-allowlisted tool call halts the run naming the denial", () => {
+    const fixture = makeFixture(DENIAL_STUB);
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /permission denied for Bash/);
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
   });
 });
