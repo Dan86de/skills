@@ -9,6 +9,9 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
+// One kick never starts a session beyond this ceiling.
+const MAX_ITERATIONS = 12;
+
 // Exit codes: 0 clean completion, 1 bad input or environment, 2 halt.
 // A halt always keeps the worktree in place so a human can cd in and fix.
 function fail(message) {
@@ -245,6 +248,7 @@ function main() {
 
   let iteration = 0;
   let closeRan = false;
+  let failingSlice = null;
   for (;;) {
     if (hasOrigin) git(worktree, ["fetch", "origin", "--quiet"]);
     const states = sliceStates(worktree, base, slices);
@@ -257,13 +261,27 @@ function main() {
       process.exit(0);
     }
     if (!allDone && states.ready.length === 0) {
+      if (states.pending.size > 0) {
+        halt(
+          `waiting for human sign-off on ${[...states.pending].join(", ")} and nothing else is ready; sign off, then re-kick`,
+          worktree,
+        );
+      }
       halt(
-        `nothing is ready: done [${[...states.done].join(", ")}], pending [${[...states.pending].join(", ")}]`,
+        `nothing is ready: done [${[...states.done].join(", ")}]; check the blocked_by edges in slices.json`,
         worktree,
       );
     }
+    if (iteration >= MAX_ITERATIONS) {
+      halt(`iteration ceiling: ${MAX_ITERATIONS} sessions in one kick; re-kick to continue`, worktree);
+    }
 
     iteration++;
+    // implement-slice takes the lowest ready id, so a failed iteration is
+    // attributed to that slice.
+    const expected = states.ready
+      .map((slice) => slice.id)
+      .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))[0];
     runHarnessSession({ worktree, slug, allowlist, iteration, settingsFile });
 
     const denied = deniedTools(logFile);
@@ -282,8 +300,14 @@ function main() {
     // done still counts even though the combined count stays constant.
     const after = sliceStates(worktree, base, slices);
     if (after.done.size <= states.done.size && after.pending.size <= states.pending.size) {
-      halt(`no progress: iteration ${iteration} added no slice trailer on slices/${slug}`, worktree);
+      if (failingSlice === expected) {
+        halt(`no progress: slice ${expected} failed twice in a row`, worktree);
+      }
+      failingSlice = expected;
+      log(`iteration ${iteration} added no trailer for ${expected}; retrying once`);
+      continue;
     }
+    failingSlice = null;
   }
 }
 

@@ -1,6 +1,6 @@
 // Seam tests for run.mjs: drive the runner's process boundary against a
 // throwaway target repo with a stub harness and gh on PATH.
-// Covers slices S1 and S2 of spec/features/run-feature/spec.md.
+// Covers slices S1, S2 and S3 of spec/features/run-feature/spec.md.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -25,7 +25,8 @@ function git(repo, ...args) {
 
 const CLAUDE_STUB = `#!/usr/bin/env node
 // Stands in for a headless implement-slice session: commits the next ready
-// slice's trailer and pushes, or marks the PR ready once every slice is done.
+// slice's trailer (Slice-Pending for a hitl slice) and pushes, or marks the
+// PR ready once every slice is done.
 // Extensionless file, so Node parses it as CommonJS.
 const { appendFileSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
@@ -34,13 +35,22 @@ appendFileSync(process.env.STUB_CLAUDE_LOG, JSON.stringify(process.argv.slice(2)
 console.log("HARNESS NOISE: fatal, 0 slices done, Slice=[S9], halting run");
 const git = (...a) => execFileSync("git", a, { encoding: "utf8" }).trim();
 const slices = JSON.parse(readFileSync("spec/features/demo/slices.json", "utf8")).slices;
-const out = git("log", "--format=%(trailers:key=Slice,valueonly)", "origin/main..HEAD");
-const done = new Set(out.split("\\n").filter(Boolean));
-const next = slices.find((s) => !done.has(s.id) && s.blocked_by.every((b) => done.has(b)));
+const read = (key) =>
+  new Set(
+    git("log", "--format=%(trailers:key=" + key + ",valueonly)", "origin/main..HEAD")
+      .split("\\n")
+      .filter(Boolean),
+  );
+const done = read("Slice");
+const pending = read("Slice-Pending");
+const next = slices.find(
+  (s) => !done.has(s.id) && !pending.has(s.id) && s.blocked_by.every((b) => done.has(b)),
+);
 if (!next) {
   execFileSync("gh", ["pr", "ready", "demo"]);
 } else {
-  git("commit", "--allow-empty", "-m", next.title + "\\n\\nProof.\\n\\nSlice: " + next.id);
+  const trailer = (next.autonomy === "hitl" ? "Slice-Pending: " : "Slice: ") + next.id;
+  git("commit", "--allow-empty", "-m", next.title + "\\n\\nProof.\\n\\n" + trailer);
   git("push", "--quiet", "origin", "HEAD");
 }
 `;
@@ -58,7 +68,7 @@ const SLICES = {
   ],
 };
 
-function makeFixture(claudeStub = CLAUDE_STUB) {
+function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
   const origin = path.join(tmp, "origin.git");
   const repo = path.join(tmp, "repo");
@@ -71,7 +81,7 @@ function makeFixture(claudeStub = CLAUDE_STUB) {
   writeFileSync(path.join(repo, "spec", "features", "demo", "spec.md"), "# demo\n");
   writeFileSync(
     path.join(repo, "spec", "features", "demo", "slices.json"),
-    JSON.stringify(SLICES, null, 2),
+    JSON.stringify(slices, null, 2),
   );
   mkdirSync(path.join(repo, ".claude"), { recursive: true });
   writeFileSync(
@@ -216,13 +226,14 @@ console.log("Bash call denied; cannot continue");
 `;
 
 describe("run.mjs halts keep the worktree and exit non-zero", () => {
-  it("an iteration with no new slice trailer halts the run as no progress", () => {
+  it("a slice failing twice in a row halts the run as no progress, naming the slice", () => {
     const fixture = makeFixture(IDLE_STUB);
     const { result, claudeLog } = runRunner(fixture);
     assert.equal(result.status, 2, result.stderr);
-    assert.match(result.stderr, /no progress/);
+    assert.match(result.stderr, /no progress: slice S1 failed twice in a row/);
     assert.ok(existsSync(fixture.worktree), "worktree should be kept");
-    assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 1);
+    // One attempt and one retry, never a third.
+    assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 2);
   });
 
   it("a session's non-allowlisted tool call halts the run naming the denial", () => {
@@ -230,6 +241,63 @@ describe("run.mjs halts keep the worktree and exit non-zero", () => {
     const { result } = runRunner(fixture);
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /permission denied for Bash/);
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+  });
+
+  it("a single kick never starts a 13th iteration", () => {
+    // 20 independent afk slices would take 21 sessions; the ceiling stops
+    // the kick after 12.
+    const many = {
+      spec: SLICES.spec,
+      slices: Array.from({ length: 20 }, (_, i) => ({
+        id: `S${i + 1}`,
+        title: `Slice ${i + 1}`,
+        blocked_by: [],
+        autonomy: "afk",
+      })),
+    };
+    const fixture = makeFixture(CLAUDE_STUB, many);
+    const { result, claudeLog } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /iteration ceiling: 12 sessions/);
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+    assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 12);
+  });
+
+  it("one failed iteration recovers on retry and the run still completes", () => {
+    // The stub fails only its first invocation, so the retry lands S1 and
+    // the twice-in-a-row counter provably resets instead of halting.
+    const flaky = CLAUDE_STUB.replace(
+      "// Misleading noise",
+      `const attempts = readFileSync(process.env.STUB_CLAUDE_LOG, "utf8")
+  .split("\\n")
+  .filter(Boolean).length;
+if (attempts === 1) {
+  console.log("first attempt wandered and committed nothing");
+  process.exit(0);
+}
+// Misleading noise`,
+    );
+    const fixture = makeFixture(flaky);
+    const { result, claudeLog } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    // The failed attempt, its retry landing S1, then S2 and the close pass.
+    assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 4);
+    assert.ok(!existsSync(fixture.worktree), "worktree should be removed");
+  });
+
+  it("a pending hitl slice with nothing else ready halts naming the waiting slice", () => {
+    const hitl = {
+      spec: SLICES.spec,
+      slices: [
+        { id: "S1", title: "Needs sign-off", blocked_by: [], autonomy: "hitl" },
+        { id: "S2", title: "Second slice", blocked_by: ["S1"], autonomy: "afk" },
+      ],
+    };
+    const fixture = makeFixture(CLAUDE_STUB, hitl);
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /waiting for human sign-off on S1/);
     assert.ok(existsSync(fixture.worktree), "worktree should be kept");
   });
 });

@@ -25,7 +25,8 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - After the last slice it runs one more session so implement-slice closes the branch and marks the PR ready.
 - It refuses a worktree that already exists.
 - It detects permission denials through a `PermissionRequest` hook injected per invocation, which logs the denied tool to a file outside the worktree; harness stdout stays unparsed.
-- Exit codes: 0 is clean completion with the worktree removed and the branch and PR intact; 1 is bad input or environment; 2 is a halt (a denied tool call, an iteration that lands no new trailer, or nothing ready), which always keeps the worktree so a human can cd in and fix.
+- A failed iteration gets one retry; the same slice failing twice in a row halts, as does the 12-session ceiling per kick and a slice awaiting human sign-off with nothing else ready.
+- Exit codes: 0 is clean completion with the worktree removed and the branch and PR intact; 1 is bad input or environment; 2 is a halt, which always keeps the worktree so a human can cd in and fix.
 
 ## Harness
 
