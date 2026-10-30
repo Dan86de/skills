@@ -1,5 +1,11 @@
 # dan86de-skills
 
+## 0.12.2
+
+### Patch Changes
+
+- [#29](https://github.com/Dan86de/skills/pull/29) [`308ade6`](https://github.com/Dan86de/skills/commit/308ade6476b9264b587fe03649c16cddaa3e888f) Thanks [@Dan86de](https://github.com/Dan86de)! - implement-slice renders each slice's PR section as Markdown that leads with what needs the reader, links every finding to its line, and folds the proof away; review findings carry their outcome so fixed ones no longer read as open.
+
 ## 0.12.1
 
 ### Patch Changes
