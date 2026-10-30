@@ -4,7 +4,14 @@
 // State is read only from git trailers and slices.json, never from harness stdout.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -88,12 +95,39 @@ function baseRef(repo, branch) {
   return branch;
 }
 
+// The branch checked out at worktreePath, when git knows that path as a
+// worktree of this repo; null otherwise.
+function worktreeBranch(repo, worktreePath) {
+  const target = realpathSync(worktreePath);
+  let current = null;
+  for (const line of git(repo, ["worktree", "list", "--porcelain"]).split("\n")) {
+    if (line.startsWith("worktree ")) {
+      try {
+        current = realpathSync(line.slice("worktree ".length));
+      } catch {
+        current = null;
+      }
+    } else if (line.startsWith("branch ") && current === target) {
+      return line.slice("branch ".length).replace("refs/heads/", "");
+    }
+  }
+  return null;
+}
+
 function addWorktree(repo, slug, base) {
   const worktree = path.join(path.dirname(repo), `${path.basename(repo)}-slices-${slug}`);
-  if (existsSync(worktree)) {
-    fail(`worktree ${worktree} already exists; remove it or finish that run first`);
-  }
   const branch = `slices/${slug}`;
+  if (existsSync(worktree)) {
+    // A kept worktree from a halted run: resume in it once it is settled.
+    if (worktreeBranch(repo, worktree) !== branch) {
+      fail(`${worktree} exists but is not a worktree on ${branch}; remove it, then re-kick`);
+    }
+    if (git(worktree, ["status", "--porcelain"]) !== "") {
+      fail(`worktree ${worktree} has uncommitted changes; commit or clean them, then re-kick`);
+    }
+    log(`resuming in existing worktree ${worktree}`);
+    return worktree;
+  }
   if (gitOk(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])) {
     git(repo, ["worktree", "add", worktree, branch]);
   } else if (gitOk(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`])) {
@@ -250,12 +284,30 @@ function main() {
   const worktree = addWorktree(repo, slug, base);
   log(`worktree ${worktree} on slices/${slug}`);
 
+  const hasOrigin = gitOk(repo, ["remote", "get-url", "origin"]);
+  // A human fix may have been pushed from outside the worktree; catch up when
+  // it fast-forwards and refuse readably when the branch diverged.
+  if (hasOrigin) {
+    git(worktree, ["fetch", "origin", "--quiet"]);
+    if (gitOk(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/slices/${slug}`])) {
+      const merged = spawnSync(
+        "git",
+        ["-C", worktree, "merge", "--ff-only", "--quiet", `origin/slices/${slug}`],
+        { encoding: "utf8" },
+      );
+      if (merged.status !== 0) {
+        const cause = merged.stderr.trim() || "the branches diverged";
+        fail(
+          `slices/${slug} did not fast-forward onto origin/slices/${slug}: ${cause}; reconcile, then re-kick`,
+        );
+      }
+    }
+  }
+
   const slices = readSlices(worktree, slug);
   const allowlist = bashAllowlist(worktree);
   const { dir: denialDir, settingsFile, logFile } = denialChannel(slug);
   log(`denial log ${logFile}`);
-
-  const hasOrigin = gitOk(repo, ["remote", "get-url", "origin"]);
 
   let iteration = 0;
   let closeRan = false;

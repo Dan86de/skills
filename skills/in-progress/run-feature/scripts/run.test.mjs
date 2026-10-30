@@ -1,6 +1,6 @@
 // Seam tests for run.mjs: drive the runner's process boundary against a
 // throwaway target repo with a stub harness and gh on PATH.
-// Covers slices S1 through S4 of spec/features/run-feature/spec.md.
+// Covers slices S1 through S5 of spec/features/run-feature/spec.md.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -150,6 +150,19 @@ function runRunner(fixture) {
   return { result, claudeLog, ghLog, osaLog };
 }
 
+// The Slice trailers landed on origin's slices branch, sorted.
+function landedTrailers(repo) {
+  return git(
+    repo,
+    "log",
+    "--format=%(trailers:key=Slice,valueonly)",
+    "origin/main..origin/slices/demo",
+  )
+    .split("\n")
+    .filter(Boolean)
+    .sort();
+}
+
 // The notification body of each recorded osascript call.
 function bannerPayloads(osaLog) {
   return readFileSync(osaLog, "utf8")
@@ -176,16 +189,7 @@ describe("run.mjs loops slices to a ready PR in a worktree", () => {
 
   it("one kick lands every afk slice trailer on the slices branch and marks the PR ready", () => {
     assert.equal(result.status, 0, result.stderr);
-    const trailers = git(
-      fixture.repo,
-      "log",
-      "--format=%(trailers:key=Slice,valueonly)",
-      "origin/main..origin/slices/demo",
-    )
-      .split("\n")
-      .filter(Boolean)
-      .sort();
-    assert.deepEqual(trailers, ["S1", "S2"]);
+    assert.deepEqual(landedTrailers(fixture.repo), ["S1", "S2"]);
     assert.match(readFileSync(ghLog, "utf8"), /pr ready/);
   });
 
@@ -221,13 +225,7 @@ describe("run.mjs loops slices to a ready PR in a worktree", () => {
     assert.equal(result.status, 0);
     const invocations = readFileSync(claudeLog, "utf8").split("\n").filter(Boolean);
     assert.equal(invocations.length, 3);
-    const trailers = git(
-      fixture.repo,
-      "log",
-      "--format=%(trailers:key=Slice,valueonly)",
-      "origin/main..origin/slices/demo",
-    );
-    assert.ok(!trailers.includes("S9"));
+    assert.ok(!landedTrailers(fixture.repo).includes("S9"));
   });
 
   it("removes the worktree on clean completion, leaving the branch and PR intact", () => {
@@ -322,6 +320,78 @@ if (attempts === 1) {
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /waiting for human sign-off on S1/);
     assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+  });
+});
+
+describe("run.mjs resumes from git state on re-kick", () => {
+  it("re-running the same command after a halt and a human fix completes the rest", () => {
+    // First kick: every S1 attempt fails, so the run halts and keeps the
+    // worktree.
+    const fixture = makeFixture(IDLE_STUB);
+    const first = runRunner(fixture);
+    assert.equal(first.result.status, 2, first.result.stderr);
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+    // The human fix: commit S1's trailer in the kept worktree and push.
+    git(
+      fixture.worktree,
+      "commit",
+      "--allow-empty",
+      "-m",
+      "First slice\n\nFixed by hand.\n\nSlice: S1",
+    );
+    git(fixture.worktree, "push", "--quiet", "origin", "HEAD");
+    // Re-kick the same command, now with a working session stub.
+    writeFileSync(path.join(fixture.bin, "claude"), CLAUDE_STUB);
+    const second = runRunner(fixture);
+    assert.equal(second.result.status, 0, second.result.stderr);
+    assert.match(second.result.stdout, /resuming in existing worktree/);
+    // Only the remaining work ran: S2 and the close pass.
+    assert.equal(readFileSync(second.claudeLog, "utf8").split("\n").filter(Boolean).length, 2);
+    assert.deepEqual(landedTrailers(fixture.repo), ["S1", "S2"]);
+    assert.match(readFileSync(second.ghLog, "utf8"), /pr ready/);
+    assert.ok(!existsSync(fixture.worktree), "worktree should be removed after completion");
+  });
+
+  it("a kept worktree with uncommitted changes refuses the re-kick readably", () => {
+    const fixture = makeFixture(IDLE_STUB);
+    const first = runRunner(fixture);
+    assert.equal(first.result.status, 2);
+    writeFileSync(path.join(fixture.worktree, "half-done.txt"), "wip");
+    const second = runRunner(fixture);
+    assert.equal(second.result.status, 1, second.result.stderr);
+    assert.match(second.result.stderr, /uncommitted changes/);
+  });
+
+  it("a foreign directory at the worktree path refuses the kick", () => {
+    const fixture = makeFixture();
+    mkdirSync(fixture.worktree);
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /not a worktree on slices\/demo/);
+  });
+
+  it("a branch that diverged from origin refuses the re-kick readably", () => {
+    const fixture = makeFixture(IDLE_STUB);
+    const first = runRunner(fixture);
+    assert.equal(first.result.status, 2);
+    // Push one fix, then rewrite it locally so the branch diverges.
+    git(fixture.worktree, "commit", "--allow-empty", "-m", "Fix A\n\nSlice: S1");
+    git(fixture.worktree, "push", "--quiet", "origin", "HEAD");
+    git(fixture.worktree, "reset", "--hard", "--quiet", "HEAD~1");
+    git(fixture.worktree, "commit", "--allow-empty", "-m", "Fix B\n\nSlice: S1");
+    const second = runRunner(fixture);
+    assert.equal(second.result.status, 1, second.result.stderr);
+    assert.match(second.result.stderr, /did not fast-forward/);
+  });
+
+  it("a halted run leaves no watcher, timer, or background process", () => {
+    const fixture = makeFixture(IDLE_STUB);
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 2);
+    // Nothing referencing the fixture survives the runner's exit, so nothing
+    // can resume on its own; only typing the command again starts a run.
+    const processes = execFileSync("ps", ["-axo", "command"], { encoding: "utf8" });
+    assert.ok(!processes.includes(fixture.tmp), "no process should reference the fixture");
   });
 });
 
