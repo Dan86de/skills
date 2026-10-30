@@ -27,6 +27,7 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - It detects permission denials through a `PermissionRequest` hook injected per invocation, which logs the denied tool to a file outside the worktree; harness stdout stays unparsed.
 - A failed iteration gets one retry; the same slice failing twice in a row halts, as does the 12-session ceiling per kick and a slice awaiting human sign-off with nothing else ready.
 - Exit codes: 0 is clean completion with the worktree removed and the branch and PR intact; 1 is bad input or environment; 2 is a halt, which always keeps the worktree so a human can cd in and fix.
+- Every end state, success or halt, fires exactly one macOS banner with sound carrying only the end state name; detail stays in the terminal output and the PR, and a machine that cannot show the banner just logs that it was skipped.
 
 ## Harness
 

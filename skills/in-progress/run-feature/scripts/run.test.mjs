@@ -1,6 +1,6 @@
 // Seam tests for run.mjs: drive the runner's process boundary against a
 // throwaway target repo with a stub harness and gh on PATH.
-// Covers slices S1, S2 and S3 of spec/features/run-feature/spec.md.
+// Covers slices S1 through S4 of spec/features/run-feature/spec.md.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -60,12 +60,35 @@ const { appendFileSync } = require("node:fs");
 appendFileSync(process.env.STUB_GH_LOG, process.argv.slice(2).join(" ") + "\\n");
 `;
 
+const OSASCRIPT_STUB = `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+appendFileSync(process.env.STUB_OSA_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+`;
+
 const SLICES = {
   spec: "spec/features/demo/spec.md",
   slices: [
     { id: "S1", title: "First slice", blocked_by: [], autonomy: "afk" },
     { id: "S2", title: "Second slice", blocked_by: ["S1"], autonomy: "afk" },
   ],
+};
+
+const HITL_SLICES = {
+  spec: SLICES.spec,
+  slices: [
+    { id: "S1", title: "Needs sign-off", blocked_by: [], autonomy: "hitl" },
+    { id: "S2", title: "Second slice", blocked_by: ["S1"], autonomy: "afk" },
+  ],
+};
+
+const MANY_SLICES = {
+  spec: SLICES.spec,
+  slices: Array.from({ length: 20 }, (_, i) => ({
+    id: `S${i + 1}`,
+    title: `Slice ${i + 1}`,
+    blocked_by: [],
+    autonomy: "afk",
+  })),
 };
 
 function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES) {
@@ -97,8 +120,10 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES) {
   mkdirSync(bin);
   writeFileSync(path.join(bin, "claude"), claudeStub);
   writeFileSync(path.join(bin, "gh"), GH_STUB);
+  writeFileSync(path.join(bin, "osascript"), OSASCRIPT_STUB);
   chmodSync(path.join(bin, "claude"), 0o755);
   chmodSync(path.join(bin, "gh"), 0o755);
+  chmodSync(path.join(bin, "osascript"), 0o755);
 
   const worktree = path.join(tmp, "repo-slices-demo");
   return { tmp, repo, bin, worktree };
@@ -107,8 +132,10 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES) {
 function runRunner(fixture) {
   const claudeLog = path.join(fixture.tmp, "claude.log");
   const ghLog = path.join(fixture.tmp, "gh.log");
+  const osaLog = path.join(fixture.tmp, "osascript.log");
   writeFileSync(claudeLog, "");
   writeFileSync(ghLog, "");
+  writeFileSync(osaLog, "");
   const result = spawnSync("node", [RUNNER, "demo"], {
     cwd: fixture.repo,
     encoding: "utf8",
@@ -117,9 +144,21 @@ function runRunner(fixture) {
       PATH: `${fixture.bin}:${process.env.PATH}`,
       STUB_CLAUDE_LOG: claudeLog,
       STUB_GH_LOG: ghLog,
+      STUB_OSA_LOG: osaLog,
     },
   });
-  return { result, claudeLog, ghLog };
+  return { result, claudeLog, ghLog, osaLog };
+}
+
+// The notification body of each recorded osascript call.
+function bannerPayloads(osaLog) {
+  return readFileSync(osaLog, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const script = JSON.parse(line).join(" ");
+      return script.match(/display notification "([^"]*)"/)?.[1] ?? script;
+    });
 }
 
 describe("run.mjs loops slices to a ready PR in a worktree", () => {
@@ -247,16 +286,7 @@ describe("run.mjs halts keep the worktree and exit non-zero", () => {
   it("a single kick never starts a 13th iteration", () => {
     // 20 independent afk slices would take 21 sessions; the ceiling stops
     // the kick after 12.
-    const many = {
-      spec: SLICES.spec,
-      slices: Array.from({ length: 20 }, (_, i) => ({
-        id: `S${i + 1}`,
-        title: `Slice ${i + 1}`,
-        blocked_by: [],
-        autonomy: "afk",
-      })),
-    };
-    const fixture = makeFixture(CLAUDE_STUB, many);
+    const fixture = makeFixture(CLAUDE_STUB, MANY_SLICES);
     const { result, claudeLog } = runRunner(fixture);
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /iteration ceiling: 12 sessions/);
@@ -287,17 +317,62 @@ if (attempts === 1) {
   });
 
   it("a pending hitl slice with nothing else ready halts naming the waiting slice", () => {
-    const hitl = {
-      spec: SLICES.spec,
-      slices: [
-        { id: "S1", title: "Needs sign-off", blocked_by: [], autonomy: "hitl" },
-        { id: "S2", title: "Second slice", blocked_by: ["S1"], autonomy: "afk" },
-      ],
-    };
-    const fixture = makeFixture(CLAUDE_STUB, hitl);
+    const fixture = makeFixture(CLAUDE_STUB, HITL_SLICES);
     const { result } = runRunner(fixture);
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /waiting for human sign-off on S1/);
     assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+  });
+});
+
+describe("run.mjs fires one end-state banner", () => {
+  // One run per end state, each with a recording osascript stub on PATH.
+  const runs = [];
+
+  before(() => {
+    // The close pass leaves an untracked file, so the worktree removal on
+    // clean completion fails and that halt's banner gets exercised too.
+    const dirtyCloseStub = CLAUDE_STUB.replace(
+      '  execFileSync("gh", ["pr", "ready", "demo"]);',
+      `  require("node:fs").writeFileSync("leftover.txt", "dirt");
+  execFileSync("gh", ["pr", "ready", "demo"]);`,
+    );
+    const cases = [
+      ["complete", makeFixture()],
+      ["no progress", makeFixture(IDLE_STUB)],
+      ["permission denied", makeFixture(DENIAL_STUB)],
+      ["awaiting sign-off", makeFixture(CLAUDE_STUB, HITL_SLICES)],
+      ["iteration ceiling", makeFixture(CLAUDE_STUB, MANY_SLICES)],
+      ["worktree not removed", makeFixture(dirtyCloseStub)],
+    ];
+    for (const [state, fixture] of cases) {
+      const { osaLog } = runRunner(fixture);
+      runs.push({ state, payloads: bannerPayloads(osaLog) });
+    }
+  });
+
+  it("clean completion and each halt path invoke notify exactly once with the end state", () => {
+    for (const run of runs) {
+      assert.equal(run.payloads.length, 1, `${run.state}: ${JSON.stringify(run.payloads)}`);
+    }
+  });
+
+  it("the banner payload carries only the end state name", () => {
+    for (const run of runs) {
+      assert.deepEqual(run.payloads, [run.state]);
+    }
+  });
+
+  it("an exit-1 input failure is not an end state and fires no banner", () => {
+    const fixture = makeFixture();
+    const osaLog = path.join(fixture.tmp, "osascript.log");
+    writeFileSync(osaLog, "");
+    const result = spawnSync("node", [RUNNER, "Bad_Slug"], {
+      cwd: fixture.repo,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${fixture.bin}:${process.env.PATH}`, STUB_OSA_LOG: osaLog },
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.deepEqual(bannerPayloads(osaLog), []);
   });
 });

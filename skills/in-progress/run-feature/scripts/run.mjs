@@ -19,10 +19,21 @@ function fail(message) {
   process.exit(1);
 }
 
-function halt(message, worktree) {
+function halt(state, message, worktree) {
+  notify(state);
   process.stderr.write(`run-feature: halt: ${message}\n`);
   process.stderr.write(`run-feature: worktree kept at ${worktree}\n`);
   process.exit(2);
+}
+
+// The one end-state signal: a macOS banner with sound carrying only the end
+// state name; detail stays in the terminal output and the PR. One function,
+// so routing it to ntfy later is a local change.
+function notify(state) {
+  const payload = state.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+  const script = `display notification "${payload}" with title "run-feature" sound name "Glass"`;
+  const result = spawnSync("osascript", ["-e", script], { stdio: "ignore" });
+  if (result.error || result.status !== 0) log("banner not shown");
 }
 
 function log(message) {
@@ -100,7 +111,7 @@ function removeWorktree(repo, worktree) {
     encoding: "utf8",
   });
   if (result.status !== 0) {
-    halt(`could not remove the worktree: ${result.stderr.trim()}`, worktree);
+    halt("worktree not removed", `could not remove the worktree: ${result.stderr.trim()}`, worktree);
   }
 }
 
@@ -257,23 +268,30 @@ function main() {
     if (allDone && closeRan) {
       removeWorktree(repo, worktree);
       rmSync(denialDir, { recursive: true, force: true });
+      notify("complete");
       log(`all ${slices.length} slices done, branch closed, worktree removed`);
       process.exit(0);
     }
     if (!allDone && states.ready.length === 0) {
       if (states.pending.size > 0) {
         halt(
+          "awaiting sign-off",
           `waiting for human sign-off on ${[...states.pending].join(", ")} and nothing else is ready; sign off, then re-kick`,
           worktree,
         );
       }
       halt(
+        "nothing ready",
         `nothing is ready: done [${[...states.done].join(", ")}]; check the blocked_by edges in slices.json`,
         worktree,
       );
     }
     if (iteration >= MAX_ITERATIONS) {
-      halt(`iteration ceiling: ${MAX_ITERATIONS} sessions in one kick; re-kick to continue`, worktree);
+      halt(
+        "iteration ceiling",
+        `iteration ceiling: ${MAX_ITERATIONS} sessions in one kick; re-kick to continue`,
+        worktree,
+      );
     }
 
     iteration++;
@@ -287,6 +305,7 @@ function main() {
     const denied = deniedTools(logFile);
     if (denied.length > 0) {
       halt(
+        "permission denied",
         `permission denied for ${denied.join(", ")} in iteration ${iteration}; grow the project's allowlist or run the slice attended`,
         worktree,
       );
@@ -301,7 +320,7 @@ function main() {
     const after = sliceStates(worktree, base, slices);
     if (after.done.size <= states.done.size && after.pending.size <= states.pending.size) {
       if (failingSlice === expected) {
-        halt(`no progress: slice ${expected} failed twice in a row`, worktree);
+        halt("no progress", `no progress: slice ${expected} failed twice in a row`, worktree);
       }
       failingSlice = expected;
       log(`iteration ${iteration} added no trailer for ${expected}; retrying once`);
