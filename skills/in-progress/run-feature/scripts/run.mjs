@@ -6,18 +6,56 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
-  mkdtempSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
 // One kick never starts a session beyond this ceiling.
 const MAX_ITERATIONS = 12;
+
+// The Bash allowlist seeded into a project that has no committed Claude
+// settings yet. The headless sessions skip the permission system entirely;
+// this baseline is for the attended sessions a human runs in a kept worktree.
+const DEFAULT_SETTINGS = {
+  permissions: {
+    allow: [
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(pnpm:*)",
+      "Bash(node:*)",
+      "Bash(nohup:*)",
+      "Bash(.agents/skills/verify/rpc:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(cut:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(tr:*)",
+      "Bash(diff:*)",
+      "Bash(jq:*)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(cp:*)",
+      "Bash(echo:*)",
+      "Bash(printf:*)",
+      "Bash(date:*)",
+      "Bash(sleep:*)",
+      "Bash(kill:*)",
+    ],
+  },
+};
 
 // Exit codes: 0 clean completion, 1 bad input or environment, 2 halt.
 // A halt always keeps the worktree in place so a human can cd in and fix.
@@ -172,17 +210,24 @@ function readSlices(worktree, slug) {
   return parsed.slices;
 }
 
-function bashAllowlist(worktree) {
-  const file = path.join(worktree, ".claude", "settings.json");
-  if (!existsSync(file)) return [];
-  try {
-    const settings = JSON.parse(readFileSync(file, "utf8"));
-    const allow = settings?.permissions?.allow;
-    if (!Array.isArray(allow)) return [];
-    return allow.filter((entry) => typeof entry === "string" && entry.startsWith("Bash("));
-  } catch {
-    return [];
-  }
+// Commit one file to the slices branch, pushed when a remote exists, so the
+// worktree stays clean.
+function commitFile(worktree, relative, message, hasOrigin) {
+  git(worktree, ["add", relative]);
+  git(worktree, ["commit", "--quiet", "-m", message]);
+  if (hasOrigin) git(worktree, ["push", "--quiet", "origin", "HEAD"]);
+}
+
+// Seed a project that has no committed Claude settings with a default Bash
+// allowlist, committed like the pre-steps so the worktree stays clean.
+function ensureSettings(worktree, hasOrigin) {
+  const relative = path.join(".claude", "settings.json");
+  const target = path.join(worktree, relative);
+  if (existsSync(target)) return;
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, JSON.stringify(DEFAULT_SETTINGS, null, 2) + "\n");
+  commitFile(worktree, relative, "chore: seed the default Claude settings allowlist", hasOrigin);
+  log(`seeded ${relative} with the default Bash allowlist`);
 }
 
 // Slice states from git trailers alone, per the implement-slice contract:
@@ -211,54 +256,17 @@ function sliceStates(worktree, base, slices) {
   return { done, pending, ready };
 }
 
-// A headless session cannot show a permission prompt, so a tool call that is
-// not allowlisted raises PermissionRequest and stays denied when no hook
-// approves it. This injected hook writes each request to a log file outside
-// the worktree, which is how a denial reaches the runner without parsing
-// harness stdout.
-function denialChannel(slug) {
-  const dir = mkdtempSync(path.join(os.tmpdir(), `run-feature-${slug}-`));
-  const logFile = path.join(dir, "denials.jsonl");
-  const settingsFile = path.join(dir, "settings.json");
-  if (logFile.includes("'")) {
-    fail(`temp dir ${dir} contains a single quote, which would break the denial hook`);
-  }
-  const command = `cat >> '${logFile}'; echo >> '${logFile}'`;
-  writeFileSync(
-    settingsFile,
-    JSON.stringify({
-      hooks: {
-        PermissionRequest: [{ hooks: [{ type: "command", command }] }],
-      },
-    }),
-  );
-  return { dir, settingsFile, logFile };
-}
-
-function deniedTools(logFile) {
-  if (!existsSync(logFile)) return [];
-  const names = [];
-  for (const line of readFileSync(logFile, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line);
-      names.push(entry.tool_name ?? "unknown tool");
-    } catch {
-      names.push("unknown tool");
-    }
-  }
-  return names;
-}
-
 function quoteArg(arg) {
   return /[\s"]/.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg;
 }
 
 // The one place the harness is invoked, so a second harness stays additive.
-// stdout and stderr stream straight to the terminal and are never captured.
-function runHarnessSession({ worktree, prompt, allowlist, label, settingsFile }) {
-  const args = ["-p", prompt, "--permission-mode", "acceptEdits", "--settings", settingsFile];
-  if (allowlist.length > 0) args.push("--allowedTools", allowlist.join(","));
+// The worktree is dedicated and the loop is already trusted to commit and
+// push, so sessions skip the permission system instead of stalling behind an
+// allowlist. stdout and stderr stream straight to the terminal and are never
+// captured.
+function runHarnessSession({ worktree, prompt, label }) {
+  const args = ["-p", prompt, "--dangerously-skip-permissions"];
   log(`${label}: claude ${args.map(quoteArg).join(" ")}`);
   const result = spawnSync("claude", args, {
     cwd: worktree,
@@ -287,9 +295,7 @@ function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
   if (!existsSync(target)) {
     halt("pre-step failed", `the ${skill} session did not write ${target}`, worktree);
   }
-  git(worktree, ["add", relative]);
-  git(worktree, ["commit", "--quiet", "-m", `spec: write ${slug} ${file} headlessly`]);
-  if (hasOrigin) git(worktree, ["push", "--quiet", "origin", "HEAD"]);
+  commitFile(worktree, relative, `spec: write ${slug} ${file} headlessly`, hasOrigin);
   log(`pre-step committed ${relative}`);
 }
 
@@ -330,21 +336,9 @@ function main() {
     );
   }
 
-  const allowlist = bashAllowlist(worktree);
-  const { dir: denialDir, settingsFile, logFile } = denialChannel(slug);
-  log(`denial log ${logFile}`);
+  ensureSettings(worktree, hasOrigin);
 
-  const session = (prompt, label) => {
-    runHarnessSession({ worktree, prompt, allowlist, label, settingsFile });
-    const denied = deniedTools(logFile);
-    if (denied.length > 0) {
-      halt(
-        "permission denied",
-        `permission denied for ${denied.join(", ")} during ${label}; grow the project's allowlist or run it attended`,
-        worktree,
-      );
-    }
-  };
+  const session = (prompt, label) => runHarnessSession({ worktree, prompt, label });
 
   const featureDir = path.join(worktree, "spec", "features", slug);
   if (!existsSync(path.join(featureDir, "spec.md")) && !existsSync(path.join(featureDir, "decisions.md"))) {
@@ -379,7 +373,6 @@ function main() {
 
     if (allDone && closeRan) {
       removeWorktree(repo, worktree);
-      rmSync(denialDir, { recursive: true, force: true });
       notify("complete");
       log(`all ${slices.length} slices done, branch closed, worktree removed`);
       process.exit(0);

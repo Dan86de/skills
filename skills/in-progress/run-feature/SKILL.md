@@ -22,11 +22,11 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - Creates the worktree as a sibling of the repo, named `<repo>-slices-<slug>`, on the branch `slices/<slug>`, so the main checkout stays untouched.
 - Halts before any harness session when the project has no verify skill, naming make-verify.
 - Writes a missing spec or slices file through a headless write-spec or write-slices session and commits it to the slices branch before the loop starts.
-- Runs each slice attempt as a fresh `claude -p "/implement-slice spec/features/<slug>/"` session with `--permission-mode acceptEdits` and the Bash allowlist from the project's committed settings.
+- Seeds a project that has no committed `.claude/settings.json` with a default Bash allowlist and commits it before any session, a baseline for the attended sessions a human runs in a kept worktree.
+- Runs each slice attempt as a fresh `claude -p "/implement-slice spec/features/<slug>/"` session with `--dangerously-skip-permissions`: the worktree is dedicated and the loop is already trusted to commit and push, so an allowlist would only stall it.
 - Between iterations it decides from `git log` trailers and `slices.json` alone, never from session stdout.
 - After the last slice it runs one more session so implement-slice closes the branch and marks the PR ready.
 - A kept worktree from a halted run is resumed by typing the same command again once its tree is committed or clean; nothing resumes on its own, and a foreign directory at the worktree path refuses.
-- It detects permission denials through a `PermissionRequest` hook injected per invocation, which logs the denied tool to a file outside the worktree; harness stdout stays unparsed.
 - A failed iteration gets one retry; the same slice failing twice in a row halts, as does the 12-session ceiling per kick and a slice awaiting human sign-off with nothing else ready.
 - Exit codes: 0 is clean completion with the worktree removed and the branch and PR intact; 1 is bad input or environment; 2 is a halt, which always keeps the worktree so a human can cd in and fix.
 - Every end state, success or halt, fires exactly one macOS banner with sound carrying only the end state name; detail stays in the terminal output and the PR, and a machine that cannot show the banner just logs that it was skipped.

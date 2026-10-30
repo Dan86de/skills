@@ -111,12 +111,22 @@ const MANY_SLICES = {
 };
 
 function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
-  const { specFiles = true, verifySkill = true, decisionsFile = true } = opts;
+  const {
+    specFiles = true,
+    verifySkill = true,
+    decisionsFile = true,
+    settingsFile = true,
+    origin = true,
+  } = opts;
   const tmp = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
-  const origin = path.join(tmp, "origin.git");
   const repo = path.join(tmp, "repo");
-  execFileSync("git", ["init", "--bare", "--quiet", "-b", "main", origin]);
-  execFileSync("git", ["clone", "--quiet", origin, repo]);
+  if (origin) {
+    const originDir = path.join(tmp, "origin.git");
+    execFileSync("git", ["init", "--bare", "--quiet", "-b", "main", originDir]);
+    execFileSync("git", ["clone", "--quiet", originDir, repo]);
+  } else {
+    execFileSync("git", ["init", "--quiet", "-b", "main", repo]);
+  }
   git(repo, "config", "user.name", "Test");
   git(repo, "config", "user.email", "test@example.com");
 
@@ -135,15 +145,19 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
     mkdirSync(path.join(repo, ".agents", "skills", "verify"), { recursive: true });
     writeFileSync(path.join(repo, ".agents", "skills", "verify", "SKILL.md"), "# verify\n");
   }
-  mkdirSync(path.join(repo, ".claude"), { recursive: true });
-  writeFileSync(
-    path.join(repo, ".claude", "settings.json"),
-    JSON.stringify({ permissions: { allow: ["Bash(pnpm test:*)", "Bash(git push:*)"] } }),
-  );
+  if (settingsFile) {
+    mkdirSync(path.join(repo, ".claude"), { recursive: true });
+    writeFileSync(
+      path.join(repo, ".claude", "settings.json"),
+      JSON.stringify({ permissions: { allow: ["Bash(pnpm test:*)", "Bash(git push:*)"] } }),
+    );
+  }
   git(repo, "add", "-A");
   git(repo, "commit", "--quiet", "-m", "spec and slices");
-  git(repo, "push", "--quiet", "-u", "origin", "main");
-  git(repo, "remote", "set-head", "origin", "main");
+  if (origin) {
+    git(repo, "push", "--quiet", "-u", "origin", "main");
+    git(repo, "remote", "set-head", "origin", "main");
+  }
 
   const bin = path.join(tmp, "bin");
   mkdirSync(bin);
@@ -227,15 +241,13 @@ describe("run.mjs loops slices to a ready PR in a worktree", () => {
     assert.equal(git(fixture.repo, "status", "--porcelain"), "");
   });
 
-  it("logs one fresh harness invocation per iteration with acceptEdits and the Bash allowlist", () => {
+  it("logs one fresh harness invocation per iteration with the permission system skipped", () => {
     const lines = result.stdout
       .split("\n")
       .filter((line) => /^\[run-feature\] iteration \d+: claude /.test(line));
     assert.equal(lines.length, 3, result.stdout);
     for (const line of lines) {
-      assert.match(line, /--permission-mode acceptEdits/);
-      assert.match(line, /Bash\(pnpm test:\*\)/);
-      assert.match(line, /Bash\(git push:\*\)/);
+      assert.match(line, /--dangerously-skip-permissions/);
       assert.match(line, /\/implement-slice spec\/features\/demo\//);
     }
     const invocations = readFileSync(claudeLog, "utf8").split("\n").filter(Boolean);
@@ -243,8 +255,17 @@ describe("run.mjs loops slices to a ready PR in a worktree", () => {
     for (const invocation of invocations) {
       const args = JSON.parse(invocation);
       assert.equal(args[0], "-p");
-      assert.deepEqual(args.slice(2, 4), ["--permission-mode", "acceptEdits"]);
+      assert.deepEqual(args.slice(2), ["--dangerously-skip-permissions"]);
     }
+  });
+
+  it("a project with its own committed Claude settings keeps them untouched", () => {
+    const subjects = git(fixture.repo, "log", "--format=%s", "origin/main..origin/slices/demo");
+    assert.ok(!subjects.includes("seed the default Claude settings"));
+    const settings = JSON.parse(
+      git(fixture.repo, "show", "origin/slices/demo:.claude/settings.json"),
+    );
+    assert.deepEqual(settings.permissions.allow, ["Bash(pnpm test:*)", "Bash(git push:*)"]);
   });
 
   it("never reads harness stdout for state: misleading noise changes nothing", () => {
@@ -272,25 +293,6 @@ appendFileSync(process.env.STUB_CLAUDE_LOG, JSON.stringify(process.argv.slice(2)
 console.log("session wandered and gave up without committing");
 `;
 
-// Simulates a session whose Bash call is not allowlisted: Claude Code runs
-// the PermissionRequest hooks from --settings, no hook approves, the call
-// stays denied, and the session gives up without committing.
-const DENIAL_STUB = `#!/usr/bin/env node
-const { appendFileSync, readFileSync } = require("node:fs");
-const { execSync } = require("node:child_process");
-appendFileSync(process.env.STUB_CLAUDE_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
-const settingsPath = process.argv[process.argv.indexOf("--settings") + 1];
-const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-const command = settings.hooks.PermissionRequest[0].hooks[0].command;
-const request = JSON.stringify({
-  hook_event_name: "PermissionRequest",
-  tool_name: "Bash",
-  tool_input: { command: "curl https://example.com" },
-});
-execSync(command, { input: request });
-console.log("Bash call denied; cannot continue");
-`;
-
 describe("run.mjs halts keep the worktree and exit non-zero", () => {
   it("a slice failing twice in a row halts the run as no progress, naming the slice", () => {
     const fixture = makeFixture(IDLE_STUB);
@@ -300,14 +302,6 @@ describe("run.mjs halts keep the worktree and exit non-zero", () => {
     assert.ok(existsSync(fixture.worktree), "worktree should be kept");
     // One attempt and one retry, never a third.
     assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 2);
-  });
-
-  it("a session's non-allowlisted tool call halts the run naming the denial", () => {
-    const fixture = makeFixture(DENIAL_STUB);
-    const { result } = runRunner(fixture);
-    assert.equal(result.status, 2, result.stderr);
-    assert.match(result.stderr, /permission denied for Bash/);
-    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
   });
 
   it("a single kick never starts a 13th iteration", () => {
@@ -408,6 +402,32 @@ describe("run.mjs runs the pre-steps headlessly and gates on the verify skill", 
     assert.match(result.stderr, /decisions\.md is missing/);
   });
 
+  it("a project without committed Claude settings gets the default allowlist seeded and committed", () => {
+    const bare = makeFixture(CLAUDE_STUB, SLICES, { settingsFile: false });
+    const run = runRunner(bare);
+    assert.equal(run.result.status, 0, run.result.stderr);
+    // The seed commit is the oldest commit on the branch, so every session
+    // already saw the settings.
+    const subjects = git(bare.repo, "log", "--format=%s", "origin/main..origin/slices/demo").split(
+      "\n",
+    );
+    assert.equal(subjects.at(-1), "chore: seed the default Claude settings allowlist");
+    const settings = JSON.parse(git(bare.repo, "show", "origin/slices/demo:.claude/settings.json"));
+    assert.ok(settings.permissions.allow.includes("Bash(git:*)"));
+    assert.ok(settings.permissions.allow.includes("Bash(pnpm:*)"));
+    assert.ok(settings.permissions.allow.every((entry) => entry.startsWith("Bash(")));
+  });
+
+  it("an origin-less repo still gets the seed committed, without a push", () => {
+    const local = makeFixture(IDLE_STUB, SLICES, { settingsFile: false, origin: false });
+    const run = runRunner(local);
+    // The idle sessions halt the run, but the seed commit already landed on
+    // the local slices branch.
+    assert.equal(run.result.status, 2, run.result.stderr);
+    const subjects = git(local.worktree, "log", "--format=%s", "main..HEAD").split("\n");
+    assert.equal(subjects.at(-1), "chore: seed the default Claude settings allowlist");
+  });
+
   it("with the verify skill removed, the runner halts naming make-verify before any session", () => {
     const gated = makeFixture(CLAUDE_STUB, SLICES, { verifySkill: false });
     const run = runRunner(gated);
@@ -505,7 +525,6 @@ describe("run.mjs fires one end-state banner", () => {
     const cases = [
       ["complete", makeFixture()],
       ["no progress", makeFixture(IDLE_STUB)],
-      ["permission denied", makeFixture(DENIAL_STUB)],
       ["awaiting sign-off", makeFixture(CLAUDE_STUB, HITL_SLICES)],
       ["iteration ceiling", makeFixture(CLAUDE_STUB, MANY_SLICES)],
       ["worktree not removed", makeFixture(dirtyCloseStub)],
