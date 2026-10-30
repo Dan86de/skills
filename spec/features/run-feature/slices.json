@@ -1,0 +1,111 @@
+{
+  "spec": "spec/features/run-feature/spec.md",
+  "commit": "1dbec46010b31831a7f53739b5eee78d3182c53f",
+  "branch": "spec/run-feature",
+  "slices": [
+    {
+      "id": "S1",
+      "kind": "feature",
+      "title": "Loop slices to a ready PR in a worktree",
+      "behaviours": [2, 5, 13],
+      "seam": "the runner's process boundary, `node scripts/run.mjs` invoked with a feature slug against a target repo",
+      "blocked_by": [],
+      "autonomy": "afk",
+      "done": {
+        "automated": [
+          "In the sandbox with spec and slices committed, one kick ends with every afk slice's trailer on the slices branch and the PR marked ready",
+          "After the run, the main checkout's HEAD is unchanged and `git status --porcelain` there is empty",
+          "The runner's own log shows one fresh harness invocation per iteration, each carrying `--permission-mode acceptEdits` and the project's Bash allowlist",
+          "The runner never reads harness stdout for state: between iterations it decides from `git log` trailers and slices.json alone"
+        ],
+        "manual": []
+      }
+    },
+    {
+      "id": "S2",
+      "kind": "feature",
+      "title": "Halt on denial or no progress, settle worktree and exit codes",
+      "behaviours": [6, 7, 10],
+      "seam": "the runner's process boundary, `node scripts/run.mjs` invoked with a feature slug against a target repo",
+      "blocked_by": ["S1"],
+      "autonomy": "afk",
+      "done": {
+        "automated": [
+          "A sandbox run whose session makes a non-allowlisted tool call exits non-zero naming the denial",
+          "An iteration that ends with no new slice trailer on the branch exits non-zero as \"no progress\"",
+          "Clean completion removes the worktree, leaves the branch and PR intact, and exits 0",
+          "Every halt keeps the worktree in place and exits non-zero"
+        ],
+        "manual": []
+      }
+    },
+    {
+      "id": "S3",
+      "kind": "feature",
+      "title": "Enforce the ceilings and the hitl wait",
+      "behaviours": [8, 9],
+      "seam": "the runner's process boundary, `node scripts/run.mjs` invoked with a feature slug against a target repo",
+      "blocked_by": ["S2"],
+      "autonomy": "afk",
+      "done": {
+        "automated": [
+          "The same slice id failing twice in a row halts immediately with that slice id named",
+          "A single kick never starts a 13th iteration",
+          "A sandbox run with a pending hitl slice and nothing else ready halts, keeps the worktree, and names the waiting slice"
+        ],
+        "manual": []
+      }
+    },
+    {
+      "id": "S4",
+      "kind": "feature",
+      "title": "Fire one end-state banner",
+      "behaviours": [11],
+      "seam": "the runner's process boundary, `node scripts/run.mjs` invoked with a feature slug against a target repo",
+      "blocked_by": ["S2"],
+      "autonomy": "afk",
+      "done": {
+        "automated": [
+          "A clean completion and each halt path each invoke `notify()` exactly once with the end state, proven by a recording osascript stub on PATH",
+          "The banner payload carries only the end state name; detail stays in terminal output"
+        ],
+        "manual": []
+      }
+    },
+    {
+      "id": "S5",
+      "kind": "feature",
+      "title": "Resume from git state on re-kick",
+      "behaviours": [12],
+      "seam": "the runner's process boundary, `node scripts/run.mjs` invoked with a feature slug against a target repo",
+      "blocked_by": ["S2"],
+      "autonomy": "afk",
+      "done": {
+        "automated": [
+          "After a halt and a human fix committed on the slices branch, re-running the same command picks up from git state and completes the remaining slices",
+          "No run starts without the command being typed again: a halted run leaves no watcher, timer, or background process"
+        ],
+        "manual": []
+      }
+    },
+    {
+      "id": "S6",
+      "kind": "feature",
+      "title": "Run the pre-steps headlessly and gate on the verify skill",
+      "behaviours": [1, 3, 4],
+      "seam": "the runner's process boundary, `node scripts/run.mjs` invoked with a feature slug against a target repo",
+      "blocked_by": ["S1"],
+      "autonomy": "hitl",
+      "done": {
+        "automated": [
+          "In the sandbox, one command takes a committed decisions.md with no spec through spec, slices, all slices committed with trailers, PR marked ready, worktree removed, exit 0",
+          "A missing spec or slices file is written and committed headlessly before the loop starts",
+          "With the sandbox's verify skill removed, the runner halts naming make-verify before any harness session starts"
+        ],
+        "manual": [
+          "One real feature in agents-hq or edm runs end to end where the only human touches are the kick and the PR review"
+        ]
+      }
+    }
+  ]
+}
