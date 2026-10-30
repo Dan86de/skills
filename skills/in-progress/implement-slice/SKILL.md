@@ -49,8 +49,11 @@ Progress lives only in git: a slice is done when its commit is on the branch.
    On any stop, commit nothing, leave the diff, report the check, the causes tried and the run folders, and end the turn.
 
 7. **Review it**: call the Skill tool with "review-change" and the arguments `HEAD --no-check`.
-   Its fixes are ungated edits, so pass step 6 again.
-   Fix any `blocks` finding, regate, and review once more; a second `blocks`, or no subagent available, stops the slice like step 6.
+   Fix any `blocks` finding and any other finding you agree with.
+   After fixing a `blocks` finding, review once more; a second `blocks`, or no subagent available, stops the slice like step 6.
+   The reviewers' fixes and yours are ungated edits, so pass step 6 again after the last of them.
+   Then mark the last review's block with each finding's outcome, as review-change's Report defines: every `judgement` is `fixed` or `stands`, and a `question` you did not fix stays unmarked for the reader.
+   If a second review ran, first copy the earlier block's `Fixed` lines and `fixed` `Open` lines into its `Fixed` section, so the commit keeps them.
 
 8. **Commit and push** one commit to `slices/<slug>`, subject the slice title:
 
@@ -67,7 +70,7 @@ Progress lives only in git: a slice is done when its commit is on the branch.
    Deviations:
    - <spec line or behaviour> - <what you did instead> - <why>
 
-   <the review-change block, exactly as returned>
+   <the review-change block, marked in step 7>
 
    Slice: S3
    ```
@@ -75,16 +78,16 @@ Progress lives only in git: a slice is done when its commit is on the branch.
    `Deviations:` reads `- none` when there were none.
    A `hitl` slice lists its `done.manual` items under `Awaiting sign-off:` after the checks, with trailer `Slice-Pending: S3`.
    The first commit opens a draft PR to the default branch, titled as the spec, its body one line per slice (id, title, blockers) then `## Slices`.
-   After each commit, append to `## Slices` a `### S3 - <title>` section with the short SHA and the commit body below the first line, trailer excluded.
+   After each commit, append the slice's section to `## Slices`, rendered from the commit per [references/pr-section.md](references/pr-section.md).
 
 9. **Close the branch** once every slice is done.
    Call the Skill tool with "review-change" and the default branch, the only review that sees duplication between slices, and check the branch against the spec yourself.
-   Fix every `blocks` finding and spec gap, regate what the fixes touched, commit as `Address review` with proof and block, push, and append the block under `## Branch review`.
+   Fix every `blocks` finding and spec gap, regate what the fixes touched, mark the block as in step 7, commit as `Address review` with proof and block, push, and render it under `## Branch review` per [references/pr-section.md](references/pr-section.md).
    Call the Skill tool with "pr-brief", then mark the PR ready for review.
 
 ## Report
 
-The slice and its state, the commit and PR, the verify run, the review's `Open` lines, any deviations, the PR's attention level after step 9, and what is ready next.
+The slice and its state, the commit and PR, the verify run, the review's `Open` lines not marked `fixed`, any deviations, the PR's attention level after step 9, and what is ready next.
 
 ## Guardrails
 

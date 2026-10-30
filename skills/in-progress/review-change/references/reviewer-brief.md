@@ -60,11 +60,11 @@ Review: <fixed-point>..working tree, <n> files
 Standards read: <paths, or "baseline only">
 
 Fixed:
-- <rule or smell> - <file:line> - <what changed>
+- <file:line> - <rule or smell> - <what changed>
 
 Open:
-- [blocks] <rule or smell> - <file:line>[, <file:line>] - <why>
-- [judgement] <rule or smell> - <file:line>[, <file:line>] - <why>
+- [blocks] <file:line>[, <file:line>] - <rule or smell> - <why>
+- [judgement] <file:line>[, <file:line>] - <rule or smell> - <why>
 - [question] <file:line> - <the question>
 
 Outside the diff: <one line, or "none">
@@ -73,3 +73,5 @@ Outside the diff: <one line, or "none">
 `<n>` is the number of changed files you were given.
 An empty section reads `- none`.
 List `blocks`, then `judgement`, then `question`.
+Each `<why>` and `<the question>` is one sentence a reader can act on without opening the standards; name the rule, do not quote it.
+Write each finding on one physical line: a caller renders it as Markdown.

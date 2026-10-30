@@ -40,6 +40,12 @@ Checks: <command> pass | <command> fail: <first failing step> | not run: no fixe
 Dropped: <paths, or "none">
 ```
 
-The block is plain text so a caller can paste it into a commit or PR unchanged.
+The block is plain text so a caller can paste it into a commit unchanged, and parse it to render elsewhere.
+A caller that acts on a finding records its **outcome** by appending one of these to the `Open` line, and changes nothing else in the block:
+
+- ` => fixed: <what changed>`
+- ` => stands: <why it is kept>`
+
+An `Open` line with no outcome is still open.
 This skill always finishes; what a `blocks` finding stops is the caller's call.
 It never stages, commits, pushes, or comments on a PR.
