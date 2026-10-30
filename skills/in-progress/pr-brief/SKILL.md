@@ -23,7 +23,7 @@ One-way rules: [references/one-way-doors.md](references/one-way-doors.md) plus a
 
 Harvest:
 
-- **findings**: `Open:` lines from review blocks, with SHA; every `Deviations:` item (a spec departure the implementer chose) and anything left for the reviewer is a `[question]`
+- **findings**: `Open:` lines from review blocks, with SHA, except those whose outcome is `fixed` (outcomes as review-change's Report defines them; a `stands` finding stays, with its reason); every `Deviations:` item (a spec departure the implementer chose) and anything left for the reviewer is a `[question]`
 - **pending sign-offs**: `Awaiting sign-off:` items of a `Slice-Pending: <id>` commit with no `Slice: <id>` commit; off a slice branch, items with no later commit subject starting `Sign off`
 - **proof**: verify runs, passing tests, before and after output, images
 
