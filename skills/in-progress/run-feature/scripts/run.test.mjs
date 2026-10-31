@@ -92,6 +92,20 @@ const PRESTEP_FAIL_STUB = CLAUDE_STUB.replace(
   "",
 );
 
+// A write-slices session that commits and pushes its file itself, as the real
+// writing skills do on a branch; the runner must not re-commit a clean tree.
+const SELF_COMMIT_STUB = CLAUDE_STUB.replace(
+  `  process.exit(0);
+}
+const git =`,
+  `  execFileSync("git", ["add", "spec/features/demo/slices.json"]);
+  execFileSync("git", ["commit", "--quiet", "-m", "write-slices committed this itself"]);
+  execFileSync("git", ["push", "--quiet", "origin", "HEAD"]);
+  process.exit(0);
+}
+const git =`,
+);
+
 const HITL_SLICES = {
   spec: SLICES.spec,
   slices: [
@@ -392,6 +406,15 @@ describe("run.mjs runs the pre-steps headlessly and gates on the verify skill", 
       "spec: write demo spec.md headlessly",
     ]);
     assert.equal(git(fixture.repo, "show", "origin/slices/demo:spec/features/demo/spec.md"), "# demo");
+  });
+
+  it("a pre-step session that commits its file itself is not re-committed by the runner", () => {
+    const self = makeFixture(SELF_COMMIT_STUB, SLICES, { specFiles: false });
+    const run = runRunner(self);
+    assert.equal(run.result.status, 0, run.result.stderr);
+    const subjects = git(self.repo, "log", "--format=%s", "origin/main..origin/slices/demo");
+    assert.match(subjects, /write-slices committed this itself/);
+    assert.ok(!subjects.includes("spec: write demo slices.json headlessly"), subjects);
   });
 
   it("a pre-step session that writes nothing halts the run as pre-step failed", () => {

@@ -241,10 +241,13 @@ function readSlices(worktree, slug) {
 }
 
 // Commit one file to the slices branch, pushed when a remote exists, so the
-// worktree stays clean.
+// worktree stays clean. A session may already have committed the file itself,
+// so a clean index just skips to the push.
 function commitFile(worktree, relative, message, hasOrigin) {
   git(worktree, ["add", relative]);
-  git(worktree, ["commit", "--quiet", "-m", message]);
+  if (!gitOk(worktree, ["diff", "--cached", "--quiet"])) {
+    git(worktree, ["commit", "--quiet", "-m", message]);
+  }
   if (hasOrigin) git(worktree, ["push", "--quiet", "origin", "HEAD"]);
 }
 
