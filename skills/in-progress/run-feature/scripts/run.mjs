@@ -133,21 +133,45 @@ function baseRef(repo, branch) {
   return branch;
 }
 
+// Every checkout of the repo (the main checkout counts) as
+// { checkout, branch }, with branch null for a detached head.
+function worktreeEntries(repo) {
+  const entries = [];
+  let current = null;
+  for (const line of git(repo, ["worktree", "list", "--porcelain"]).split("\n")) {
+    if (line.startsWith("worktree ")) {
+      current = { checkout: line.slice("worktree ".length), branch: null };
+      entries.push(current);
+    } else if (line.startsWith("branch ") && current) {
+      current.branch = line.slice("branch ".length);
+    }
+  }
+  return entries;
+}
+
 // The branch checked out at worktreePath, when git knows that path as a
 // worktree of this repo; null otherwise.
 function worktreeBranch(repo, worktreePath) {
   const target = realpathSync(worktreePath);
-  let current = null;
-  for (const line of git(repo, ["worktree", "list", "--porcelain"]).split("\n")) {
-    if (line.startsWith("worktree ")) {
-      try {
-        current = realpathSync(line.slice("worktree ".length));
-      } catch {
-        current = null;
-      }
-    } else if (line.startsWith("branch ") && current === target) {
-      return line.slice("branch ".length).replace("refs/heads/", "");
+  for (const { checkout, branch } of worktreeEntries(repo)) {
+    let resolved;
+    try {
+      resolved = realpathSync(checkout);
+    } catch {
+      continue;
     }
+    if (resolved === target && branch) {
+      return branch.replace("refs/heads/", "");
+    }
+  }
+  return null;
+}
+
+// The checkout already holding this branch (the main checkout counts), so a
+// kick can refuse readably instead of failing inside git worktree add.
+function branchCheckout(repo, branch) {
+  for (const entry of worktreeEntries(repo)) {
+    if (entry.branch === `refs/heads/${branch}`) return entry.checkout;
   }
   return null;
 }
@@ -167,6 +191,12 @@ function addWorktree(repo, slug, base) {
     return worktree;
   }
   if (gitOk(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])) {
+    const holder = branchCheckout(repo, branch);
+    if (holder) {
+      fail(
+        `${branch} is already checked out at ${holder}; switch that checkout to another branch, then re-kick`,
+      );
+    }
     git(repo, ["worktree", "add", worktree, branch]);
   } else if (gitOk(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`])) {
     git(repo, ["worktree", "add", "--track", "-b", branch, worktree, `origin/${branch}`]);
@@ -260,13 +290,21 @@ function quoteArg(arg) {
   return /[\s"]/.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg;
 }
 
+// Appended to every session's system prompt: a skill that would end its turn
+// asking a question (write-slices did, on granularity) stalls a headless run,
+// so each session is told to settle open choices itself.
+const HEADLESS_NOTE =
+  "This session runs headlessly inside the run-feature loop: no human can answer mid-run. " +
+  "Never end the turn asking a question or waiting for input; " +
+  "settle every open choice with the default you would otherwise propose, note it, and finish the task.";
+
 // The one place the harness is invoked, so a second harness stays additive.
 // The worktree is dedicated and the loop is already trusted to commit and
 // push, so sessions skip the permission system instead of stalling behind an
 // allowlist. stdout and stderr stream straight to the terminal and are never
 // captured.
 function runHarnessSession({ worktree, prompt, label }) {
-  const args = ["-p", prompt, "--dangerously-skip-permissions"];
+  const args = ["-p", prompt, "--dangerously-skip-permissions", "--append-system-prompt", HEADLESS_NOTE];
   log(`${label}: claude ${args.map(quoteArg).join(" ")}`);
   const result = spawnSync("claude", args, {
     cwd: worktree,
@@ -293,7 +331,11 @@ function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
   const skill = prompt.split(" ")[0];
   session(prompt, `pre-step ${skill.slice(1)}`);
   if (!existsSync(target)) {
-    halt("pre-step failed", `the ${skill} session did not write ${target}`, worktree);
+    halt(
+      "pre-step failed",
+      `the ${skill} session did not write ${target}; write it by hand in the worktree, commit and push, then re-kick`,
+      worktree,
+    );
   }
   commitFile(worktree, relative, `spec: write ${slug} ${file} headlessly`, hasOrigin);
   log(`pre-step committed ${relative}`);

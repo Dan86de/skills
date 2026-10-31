@@ -255,7 +255,14 @@ describe("run.mjs loops slices to a ready PR in a worktree", () => {
     for (const invocation of invocations) {
       const args = JSON.parse(invocation);
       assert.equal(args[0], "-p");
-      assert.deepEqual(args.slice(2), ["--dangerously-skip-permissions"]);
+      assert.equal(args[2], "--dangerously-skip-permissions");
+      // Every session carries the headless note, so a skill settles open
+      // choices itself instead of ending the turn with a question.
+      assert.equal(args[3], "--append-system-prompt");
+      assert.ok(
+        args[4].includes("Never end the turn asking a question or waiting for input"),
+        args[4],
+      );
     }
   });
 
@@ -475,6 +482,15 @@ describe("run.mjs resumes from git state on re-kick", () => {
     const second = runRunner(fixture);
     assert.equal(second.result.status, 1, second.result.stderr);
     assert.match(second.result.stderr, /uncommitted changes/);
+  });
+
+  it("the slices branch checked out in the main checkout refuses the kick readably", () => {
+    const fixture = makeFixture();
+    git(fixture.repo, "switch", "--quiet", "-c", "slices/demo");
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /slices\/demo is already checked out at .*; switch that checkout/);
+    assert.ok(!existsSync(fixture.worktree), "no worktree may be created");
   });
 
   it("a foreign directory at the worktree path refuses the kick", () => {
