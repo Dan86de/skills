@@ -12,6 +12,7 @@ Promoting one: `git mv` it into `engineering/` or `productivity/`, add it to tha
 - [write-spec](./write-spec/SKILL.md) - turn a settled plan or decision record into a grounded spec, one document, written to `spec/features/<slug>/spec.md`.
 - [write-slices](./write-slices/SKILL.md) - decompose a spec from `write-spec` into vertical slices with blocking edges and per-slice autonomy, one JSON file written to `spec/features/<slug>/slices.json`.
 - [implement-slice](./implement-slice/SKILL.md) - build one ready slice from a `write-slices` file in a fresh conversation, prove it with the project's `verify` skill, and commit it to the spec's branch and draft PR.
+- [run-feature](./run-feature/SKILL.md) - loop `implement-slice` headlessly in a dedicated worktree, one fresh harness session per slice, until every slice of a feature is committed and its PR is ready.
 - [review-change](./review-change/SKILL.md) - review a change against the repo's own coding standards and its fit with the existing codebase in a fresh context, fix what is safe to fix in the working tree, and report the rest as a fixed-shape block.
 - [pr-brief](./pr-brief/SKILL.md) - write a branch's PR body with a visual summary, harvested evidence and a one-way or two-way door call, and put it on the PR with an `attention:` label that says whether to read, spot-check or skim.
 - [codify](./codify/SKILL.md) - turn review comments you keep making into standards entries, one-way doors and checker rules, proposed for approval and written to the working tree.
