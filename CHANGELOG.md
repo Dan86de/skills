@@ -1,5 +1,18 @@
 # dan86de-skills
 
+## 0.13.0
+
+### Minor Changes
+
+- [#31](https://github.com/Dan86de/skills/pull/31) [`365a0ae`](https://github.com/Dan86de/skills/commit/365a0ae671795334dccaebaec5b7bdeb30cd502a) Thanks [@Dan86de](https://github.com/Dan86de)! - Add the in-progress run-feature skill: a zero-dependency runner that loops implement-slice headlessly in a dedicated worktree, one fresh harness session per slice, reading progress only from git trailers and the slices file.
+  Sessions run with `--dangerously-skip-permissions`, and a project without committed Claude settings gets a default Bash allowlist seeded and committed before any session.
+  Every session's system prompt carries a headless note so a skill settles open choices with its own defaults instead of ending the turn with a question, and a slices branch already checked out elsewhere refuses the kick readably.
+  An iteration without a new slice trailer halts the run with the worktree kept for fixing, and clean completion removes the worktree and exits 0.
+  A failed iteration gets one retry before the halt, one kick runs at most 12 sessions, and a slice awaiting human sign-off with nothing else ready halts naming the waiting slice.
+  Every end state fires exactly one macOS banner with sound naming that end state.
+  After a human fix, re-running the same command resumes from the kept worktree's git state; nothing resumes on its own.
+  A missing spec or slices file is written and committed headlessly before the loop, and a project without a verify skill halts naming make-verify before any session starts.
+
 ## 0.12.2
 
 ### Patch Changes
