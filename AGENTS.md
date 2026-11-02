@@ -57,6 +57,10 @@ The package manager is pnpm.
 `pnpm-lock.yaml` is committed, and CI installs with `--frozen-lockfile`.
 The `npx skills@latest` commands in the install block stay as `npx`: those are for consumers, who will not have this repo's pnpm pin.
 
+## Commits
+
+Never add a `Co-Authored-By` line or any other agent attribution to commit messages or PR descriptions.
+
 ## Prose
 
 No em-dashes anywhere in this repo's prose.
