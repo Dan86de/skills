@@ -2,7 +2,7 @@
 
 Each slice commit gets one section under `## Slices` in the PR body.
 The commit body is the record; the section renders it for a reader on GitHub, so it is Markdown, and each paragraph or list item is one physical line.
-Build it from the slice's commits alone (its own and any sign-off), so rendering it twice gives the same section.
+Build it from the slice's commits alone (its own, any sign-off and any rework), so rendering it twice gives the same section.
 
 ## Template
 
@@ -38,8 +38,9 @@ Verify run `<run id>` · reviewed <n> files against <standards file names>
 
 - **Status**: `✅` when a commit on the branch carries `Slice: <id>`, else `⏳`.
   A sign-off commit also ticks the `Awaiting sign-off:` items and adds `Signed off in [<short SHA>](<commit URL>).` below the heading.
+  A rework commit adds `Reworked in [<short SHA>](<commit URL>): <what failed>.` below the heading, one line per rework.
 - **Needs you**, in this order:
-  - each `Awaiting sign-off:` item as `- [ ] <item>`
+  - each `Awaiting sign-off:` item of a `Slice-Pending` commit as `- [ ] <item>`; a done slice's items belong to `## Before you merge` instead, so there is one place to tick them
   - each deviation as `**Deviation:** <what you did instead>, not <spec line or behaviour>: <why>`
   - each unmarked `question` as `<link> <the question>`
 - **Stands**: each `stands` finding as `<link> <rule or smell>: <why>. Kept: <stands reason>`.

@@ -40,7 +40,8 @@ A field you cannot fill means the slice is wrong.
 **Edges are technical**: `S2` is blocked by `S1` only when it cannot be built or tested until `S1`'s code exists.
 The spec's Sequence section is not edges, and a chain where every slice blocks the next hides an edge that is not real.
 
-**Autonomy is mechanical**: `hitl` when `done.manual` is non-empty or the slice needs an action an agent cannot perform, such as a secret, consent screen or deploy approval; otherwise `afk`.
+**Autonomy is mechanical**: `hitl` when the slice needs an action an agent cannot perform, such as a secret, consent screen or deploy approval; otherwise `afk`.
+A non-empty `done.manual` alone stays `afk`: those checks wait for a person at the ready PR and block nothing.
 
 With a verification skill, every check it can run goes in `done.automated` as verify steps, even if the spec filed it under Manual.
 `done.manual` keeps only human judgement of how something looks or reads.
