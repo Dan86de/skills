@@ -35,7 +35,10 @@ describe("settleWatch", () => {
 
   it("holds every settled activity to the grace, and defaults to a grace far past a real wake", () => {
     for (const activity of ["done", "error", "idle"]) {
-      assert.equal(settleWatch(100)(activity, 0), false, activity);
+      const settled = settleWatch();
+      assert.equal(settled(activity, 0), false, activity);
+      assert.equal(settled(activity, SETTLE_GRACE_MS - 1), false, activity);
+      assert.equal(settled(activity, SETTLE_GRACE_MS), true, activity);
     }
     assert.ok(SETTLE_GRACE_MS >= 30_000);
   });

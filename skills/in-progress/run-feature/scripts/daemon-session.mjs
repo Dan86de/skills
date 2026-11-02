@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Runs one headless session through the local agents-hq daemon, so it shows on
 // the board, and returns once its turn is over and the session is ended.
-// Usage: daemon-session.mjs run-start <name> <task>            prints the run id, or nothing
+// Usage: daemon-session.mjs run-start <name> <task> <key>      prints the run id, or nothing
+//        daemon-session.mjs run-steps <run-id> <steps-json>
 //        daemon-session.mjs run-settle <run-id> <session-id> <outcome> [detail]
 //        daemon-session.mjs run-end <run-id> <outcome> [detail]
-//        daemon-session.mjs session <cwd> <prompt> <system-prompt-note> <name> <task> <result-file> [run-id] [parent-session-id]
+//        daemon-session.mjs session <cwd> <prompt> <system-prompt-note> <name> <task> <result-file> [run-id] [parent-session-id] [step-id]
 // A session writes its id to <result-file>, then the run shows it live.
 // Exit codes: 0 done, 1 lost mid-run, 3 no daemon that can run it was found and
 // nothing was launched, so the caller should run it another way.
@@ -15,8 +16,8 @@ import path from "node:path";
 import process from "node:process";
 import { settleWatch } from "./settle-watch.mjs";
 
-// The first contract version with runs, and sessionLaunch's appendSystemPrompt before them.
-const MIN_CONTRACT_VERSION = 4;
+// The first contract version with a run's key and steps, a member's stepId and the waiting outcome.
+const MIN_CONTRACT_VERSION = 5;
 const DEFAULT_PORT = 4760;
 const POLL_MS = 5000;
 const UNAVAILABLE = 3;
@@ -35,13 +36,6 @@ function connect(port, token) {
     const pending = new Map();
     let nextId = 1;
     const client = {
-      lost: new Promise((lostResolve) => {
-        socket.onclose = () => {
-          for (const { rejectCall } of pending.values()) rejectCall(new Error("the daemon went away"));
-          lostResolve();
-          reject(new Error("the daemon refused or dropped the connection"));
-        };
-      }),
       call: (tag, payload) =>
         new Promise((resolveCall, rejectCall) => {
           const id = nextId++;
@@ -49,6 +43,10 @@ function connect(port, token) {
           socket.send(`${JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] })}\n`);
         }),
       close: () => socket.close(),
+    };
+    socket.onclose = () => {
+      for (const { rejectCall } of pending.values()) rejectCall(new Error("the daemon went away"));
+      reject(new Error("the daemon refused or dropped the connection"));
     };
     socket.onopen = () => resolve(client);
     socket.onerror = () => {};
@@ -84,9 +82,9 @@ async function availableDaemon() {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runSession(args) {
-  const [cwd, prompt, note, name, task, resultFile, runId, parentSessionId] = args;
+  const [cwd, prompt, note, name, task, resultFile, runId, parentSessionId, stepId] = args;
   if (resultFile === undefined) {
-    log("usage: daemon-session.mjs session <cwd> <prompt> <note> <name> <task> <result-file> [run-id] [parent-session-id]");
+    log("usage: daemon-session.mjs session <cwd> <prompt> <note> <name> <task> <result-file> [run-id] [parent-session-id] [step-id]");
     process.exit(2);
   }
   const client = await availableDaemon();
@@ -99,9 +97,20 @@ async function runSession(args) {
     appendSystemPrompt: note,
   });
   writeFileSync(resultFile, sessionId);
-  await client.call("sessionRename", { sessionId, label: name });
+  // The board's labels are decoration: losing one must not lose the watch, or the
+  // loop would start a second session in the same worktree beside this live one.
+  const decorate = (tag, payload) =>
+    client.call(tag, payload).catch((error) => log(`${tag} failed: ${error.message}`));
+  await decorate("sessionRename", { sessionId, label: name });
   if (runId) {
-    await client.call("runAttach", { runId, sessionId, name, task, ...(parentSessionId ? { parentSessionId } : {}) });
+    await decorate("runAttach", {
+      runId,
+      sessionId,
+      name,
+      task,
+      ...(parentSessionId ? { parentSessionId } : {}),
+      ...(stepId ? { stepId } : {}),
+    });
   }
   log(`session ${sessionId} on the board as "${name}"`);
 
@@ -143,7 +152,14 @@ async function runCall(tag, payload, print) {
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === "session") return runSession(args);
-  if (command === "run-start") return runCall("runStart", { name: args[0], task: args[1] }, (run) => run.runId);
+  if (command === "run-start") {
+    const [name, task, key] = args;
+    return runCall("runStart", { name, task, key }, (run) => run.runId);
+  }
+  if (command === "run-steps") {
+    const [runId, steps] = args;
+    return runCall("runSteps", { runId, steps: JSON.parse(steps) });
+  }
   if (command === "run-settle") {
     const [runId, sessionId, outcome, detail] = args;
     return runCall("runSettle", { runId, sessionId, outcome, ...(detail ? { detail } : {}) });

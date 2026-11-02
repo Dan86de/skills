@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -188,7 +189,7 @@ const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { appendFileSync } = require("node:fs");
 const { createServer } = require("node:http");
-const [logFile, token, contractVersion] = process.argv.slice(1);
+const [logFile, token, contractVersion, failingTag] = process.argv.slice(1);
 const sessions = [];
 const answer = (tag, payload) => {
   if (tag === "ping") return { contractVersion: Number(contractVersion) };
@@ -249,7 +250,10 @@ server.on("upgrade", (request, socket) => {
       for (let i = 0; i < body.length; i++) body[i] ^= mask[i % 4];
       const { id, tag, payload } = JSON.parse(body.toString().trim());
       appendFileSync(logFile, JSON.stringify({ tag, payload }) + "\\n");
-      const exit = { _tag: "Success", value: answer(tag, payload) };
+      const exit =
+        tag === failingTag
+          ? { _tag: "Failure", cause: { message: "refused" } }
+          : { _tag: "Success", value: answer(tag, payload) };
       socket.write(frame(JSON.stringify({ _tag: "Exit", requestId: String(id), exit }) + "\\n"));
     }
   });
@@ -257,9 +261,7 @@ server.on("upgrade", (request, socket) => {
 server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 `;
 
-// One kick against a fake daemon on the given contract, returning what the
-// runner sent it in order.
-async function runRunnerWithDaemon(fixture, contractVersion = 5) {
+async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "") {
   const stateDir = path.join(fixture.tmp, "state");
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(path.join(stateDir, "token"), "test-token\n");
@@ -268,7 +270,7 @@ async function runRunnerWithDaemon(fixture, contractVersion = 5) {
   const claudeLog = path.join(fixture.tmp, "claude.log");
   const daemon = spawn(
     process.execPath,
-    ["-e", FAKE_DAEMON, daemonLog, "test-token", String(contractVersion)],
+    ["-e", FAKE_DAEMON, daemonLog, "test-token", String(contractVersion), failingTag],
     {
       stdio: ["ignore", "pipe", "inherit"],
       env: {
@@ -280,15 +282,26 @@ async function runRunnerWithDaemon(fixture, contractVersion = 5) {
     },
   );
   const port = await new Promise((resolve) => daemon.stdout.once("data", (data) => resolve(String(data).trim())));
+  return {
+    daemonEnv: { AGENTS_HQ_STATE_DIR: stateDir, AGENTS_HQ_PORT: port },
+    daemonLog,
+    stop: () => daemon.kill(),
+  };
+}
+
+// One kick against a fake daemon on the given contract, returning what the
+// runner sent it in order.
+async function runRunnerWithDaemon(fixture, contractVersion, failingTag) {
+  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag);
   try {
-    const run = runRunner(fixture, { AGENTS_HQ_STATE_DIR: stateDir, AGENTS_HQ_PORT: port });
+    const run = runRunner(fixture, daemonEnv);
     const calls = readFileSync(daemonLog, "utf8")
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line));
     return { ...run, calls };
   } finally {
-    daemon.kill();
+    stop();
   }
 }
 
@@ -877,10 +890,214 @@ describe("run.mjs puts the kick on the agents-hq board", () => {
     );
   });
 
+  it("keeps watching a launched session when the run refuses to attach it", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), 5, "runAttach");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /runAttach failed/);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 3);
+    assert.equal(callsTo(calls, "sessionList").length, 3);
+  });
+
+  it("settles the close failed, with the reason, when it did not finish", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(CLOSE_STAYS_DRAFT_STUB));
+    const close = callsTo(calls, "runSettle").at(-1);
+    assert.equal(close.outcome, "failed");
+    assert.match(close.detail, /still a draft/);
+  });
+
   it("falls back off the board, and says so, when no daemon can take the session", () => {
     const fixture = makeFixture();
     const { result } = runRunner(fixture);
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /running off the board/);
+  });
+});
+
+describe("run.mjs reports the plan and the halts to the run progress card", () => {
+  const stateOf = (steps) => steps.map((step) => `${step.id} ${step.state}`).join(", ");
+  const planOf = (calls) => callsTo(calls, "runSteps").map(({ steps }) => stateOf(steps));
+
+  it("starts the run under a key of repo and slug, named with the slug", async () => {
+    const fixture = makeFixture();
+    const { calls } = await runRunnerWithDaemon(fixture);
+    const [start] = callsTo(calls, "runStart");
+    assert.equal(start.name, "demo");
+    assert.equal(start.key, `${realpathSync(fixture.repo)}:demo`);
+  });
+
+  it("sends the same key on a re-kick, so it reopens the run", async () => {
+    const fixture = makeFixture(CLAUDE_STUB, HITL_SLICES);
+    await runRunnerWithDaemon(fixture);
+    const { calls } = await runRunnerWithDaemon(fixture);
+    const keys = callsTo(calls, "runStart").map(({ key }) => key);
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0], keys[1]);
+  });
+
+  it("sends the whole plan with titles on every state change, before any session", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture());
+    assert.deepEqual(planOf(calls), [
+      "S1 pending, S2 pending",
+      "S1 running, S2 pending",
+      "S1 done, S2 pending",
+      "S1 done, S2 running",
+      "S1 done, S2 done",
+    ]);
+    const [first] = callsTo(calls, "runSteps");
+    assert.deepEqual(first.steps.map(({ title }) => title), ["First slice", "Second slice"]);
+    assert.equal(first.runId, "run-1");
+    assert.ok(
+      calls.findIndex(({ tag }) => tag === "runSteps") < calls.findIndex(({ tag }) => tag === "sessionLaunch"),
+    );
+  });
+
+  it("sends the plan a pre-step wrote, once it exists", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, SLICES, { specFiles: false }));
+    const firstSteps = calls.findIndex(({ tag }) => tag === "runSteps");
+    assert.deepEqual(
+      calls.slice(0, firstSteps).filter(({ tag }) => tag === "runAttach").map(({ payload }) => payload.name),
+      ["write-spec", "write-slices"],
+    );
+  });
+
+  it("links each slice session to its slice, and no other session to any", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, SLICES, { specFiles: false }));
+    assert.deepEqual(
+      callsTo(calls, "runAttach").map(({ name, stepId }) => [name, stepId]),
+      [
+        ["write-spec", undefined],
+        ["write-slices", undefined],
+        ["S1", "S1"],
+        ["S2", "S2"],
+        ["Close the branch", undefined],
+      ],
+    );
+  });
+
+  it("keeps a retry on its slice, running until it fails for good", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB));
+    assert.deepEqual(
+      callsTo(calls, "runAttach").map(({ name, stepId }) => [name, stepId]),
+      [
+        ["S1", "S1"],
+        ["S1 retry", "S1"],
+      ],
+    );
+    assert.deepEqual(planOf(calls), [
+      "S1 pending, S2 pending",
+      "S1 running, S2 pending",
+      "S1 failed, S2 pending",
+    ]);
+  });
+
+  it("a sign-off halt ends the run waiting, with the slice's step waiting too", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, HITL_SLICES));
+    assert.equal(result.status, 2);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "waiting");
+    assert.match(end.detail, /sign-off on S1/);
+    assert.equal(planOf(calls).at(-1), "S1 waiting, S2 pending");
+  });
+
+  it("the session ceiling ends the run stopped with re-kick to continue", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, MANY_SLICES));
+    assert.equal(result.status, 2);
+    assert.deepEqual(callsTo(calls, "runEnd"), [
+      { runId: "run-1", outcome: "stopped", detail: "re-kick to continue" },
+    ]);
+  });
+
+  it("a slice failing twice ends the run failed with the reason", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB));
+    assert.equal(result.status, 2);
+    assert.deepEqual(callsTo(calls, "runEnd"), [
+      { runId: "run-1", outcome: "failed", detail: "no progress: slice S1 failed twice in a row" },
+    ]);
+  });
+
+  it("nothing ready ends the run stopped with the reason", async () => {
+    const stuck = {
+      spec: SLICES.spec,
+      slices: [{ id: "S1", title: "Blocked for good", blocked_by: ["S9"], autonomy: "afk" }],
+    };
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, stuck));
+    assert.equal(result.status, 2);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /nothing is ready/);
+  });
+
+  it("a close that did not finish ends the run stopped with the reason", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(CLOSE_STAYS_DRAFT_STUB));
+    assert.equal(result.status, 2);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /still a draft/);
+  });
+
+  it("a bad-input exit ends the run failed with the reason", async () => {
+    const fixture = makeFixture(CLAUDE_STUB, SLICES, { specFiles: false, decisionsFile: false });
+    const { result, calls } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 1);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "failed");
+    assert.match(end.detail, /decisions\.md is missing/);
+  });
+
+  it("an environment exit ends the run failed", async () => {
+    const fixture = makeFixture();
+    writeFileSync(path.join(fixture.bin, "claude"), "#!/bin/sh\nrm -f .git\n");
+    const { result, calls } = await runRunnerWithDaemon(fixture);
+    assert.notEqual(result.status, 0);
+    assert.equal(callsTo(calls, "runEnd")[0].outcome, "failed");
+  });
+
+  it("a halt before the first session still ends the run with its reason", async () => {
+    const fixture = makeFixture(CLAUDE_STUB, SLICES, { verifySkill: false });
+    const { result, calls } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 2);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /no verify skill/);
+  });
+
+  it("a signal mid-session stops the kick and ends the run stopped", async () => {
+    const fixture = makeFixture();
+    writeFileSync(path.join(fixture.bin, "claude"), "#!/bin/sh\nsleep 1\n");
+    const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture);
+    try {
+      const runner = spawn("node", [RUNNER, "demo"], {
+        cwd: fixture.repo,
+        stdio: "ignore",
+        env: { ...process.env, ...daemonEnv, PATH: `${fixture.bin}:${process.env.PATH}` },
+      });
+      const exited = new Promise((resolve) => runner.once("exit", resolve));
+      while (!readFileSync(daemonLog, "utf8").includes("sessionLaunch")) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      runner.kill("SIGTERM");
+      assert.equal(await exited, 2);
+      const end = readFileSync(daemonLog, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .find(({ tag }) => tag === "runEnd");
+      assert.deepEqual(end.payload, { runId: "run-1", outcome: "stopped", detail: "The run received SIGTERM." });
+    } finally {
+      stop();
+    }
+  });
+
+  it("a clean finish ends the run completed with no leftover reason", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture());
+    assert.deepEqual(callsTo(calls, "runEnd"), [{ runId: "run-1", outcome: "completed" }]);
+  });
+
+  it("a daemon on an older contract leaves the kick off the board, and says why", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), 4);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /contract 4/);
+    assert.deepEqual(callsTo(calls, "runStart"), []);
     assert.match(result.stdout, /running off the board/);
   });
 });

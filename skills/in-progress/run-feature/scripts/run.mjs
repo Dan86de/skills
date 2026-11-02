@@ -4,7 +4,7 @@
 // State is read only from git trailers and slices.json, never from harness stdout.
 // The one exception is closeGap, which asks gh whether the PR left draft.
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -70,8 +70,11 @@ function fail(message) {
   process.exit(1);
 }
 
-function halt(state, message, worktree) {
-  board.detail = message;
+// A halt reads Stopped on the board unless it says otherwise: only a person
+// being needed and a double failure read as anything else.
+function halt(state, message, worktree, { outcome = "stopped", detail = message } = {}) {
+  board.outcome = outcome;
+  board.detail = detail;
   notify(state);
   process.stderr.write(`run-feature: halt: ${message}\n`);
   process.stderr.write(`run-feature: worktree kept at ${worktree}\n`);
@@ -342,9 +345,9 @@ const HEADLESS_NOTE =
 const DAEMON_SESSION = fileURLToPath(new URL("./daemon-session.mjs", import.meta.url));
 const DAEMON_UNAVAILABLE = 3;
 
-// What the board knows of this kick: the run it shows, the end state recorded
-// when the process exits, and the last session, which a retry nests under.
-const board = { runId: "", outcome: "failed", detail: undefined, lastSession: undefined };
+// What the board knows of this kick: the run it shows and the end state recorded
+// when the process exits.
+const board = { runId: "", outcome: "failed", detail: undefined, lastSteps: "" };
 
 function daemonCall(...args) {
   return spawnSync(process.execPath, [DAEMON_SESSION, ...args], {
@@ -353,11 +356,24 @@ function daemonCall(...args) {
   });
 }
 
-function startRun(slug) {
-  board.runId = daemonCall("run-start", slug, `Run the ${slug} feature to a ready PR`).stdout?.trim() ?? "";
+// A kick spends its life waiting on sessions, and a signal handler can only run
+// while the process waits without blocking, so sessions never use spawnSync.
+function waitFor(command, args, options) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, options);
+    child.once("error", (error) => resolve({ status: null, error }));
+    child.once("close", (status) => resolve({ status }));
+  });
+}
+
+// The key makes every kick of this feature in this repo reopen one run, so its
+// cost and time stay whole. The name is the slug, which the card shows.
+function startRun(repo, slug) {
+  const key = `${realpathSync(repo)}:${slug}`;
+  board.runId = daemonCall("run-start", slug, `Run the ${slug} feature to a ready PR`, key).stdout?.trim() ?? "";
   if (board.runId === "") return;
   process.on("exit", () => {
-    daemonCall("run-end", board.runId, board.outcome, ...(board.detail === undefined ? [] : [board.detail]));
+    daemonCall("run-end", board.runId, board.outcome, board.detail ?? "");
   });
   for (const signal of ["SIGTERM", "SIGINT"]) {
     process.on(signal, () => {
@@ -368,18 +384,37 @@ function startRun(slug) {
   }
 }
 
-function settleSession(sessionId, outcome, detail) {
-  if (board.runId === "" || sessionId === undefined) return;
-  daemonCall("run-settle", board.runId, sessionId, outcome, ...(detail === undefined ? [] : [detail]));
+// The plan as git has it, plus what this kick knows and git cannot say yet: the
+// slice a session is on now, and the slice that just failed for good.
+function planSteps(slices, { done, pending }, { running, failed } = {}) {
+  const state = ({ id }) => {
+    if (done.has(id)) return "done";
+    if (pending.has(id)) return "waiting";
+    if (id === failed) return "failed";
+    return id === running ? "running" : "pending";
+  };
+  return slices.map((slice) => ({ id: slice.id, title: slice.title ?? slice.id, state: state(slice) }));
 }
 
-// A session runs through the local agents-hq daemon when one can take it, so it
-// shows on the board and can be stopped there; otherwise directly, off the board.
-// Returns its session id on the board.
-function runHarnessSession({ worktree, slug, prompt, label, name, task, parent }) {
+// The daemon takes the plan whole, so only a change is worth a call.
+function reportSteps(steps) {
+  const sent = JSON.stringify(steps);
+  if (board.runId === "" || sent === board.lastSteps) return;
+  board.lastSteps = sent;
+  daemonCall("run-steps", board.runId, sent);
+}
+
+function settleSession(sessionId, outcome, detail) {
+  if (board.runId === "" || sessionId === undefined) return;
+  daemonCall("run-settle", board.runId, sessionId, outcome, detail ?? "");
+}
+
+// Through the local agents-hq daemon when one can take it, so it shows on the board and
+// can be stopped there; otherwise directly, off the board, with no session id to return.
+async function runHarnessSession({ worktree, prompt, label, name, task, parent, stepId }) {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
   const resultFile = path.join(scratch, "session-id");
-  const viaDaemon = spawnSync(
+  const viaDaemon = await waitFor(
     process.execPath,
     [
       DAEMON_SESSION,
@@ -387,11 +422,12 @@ function runHarnessSession({ worktree, slug, prompt, label, name, task, parent }
       worktree,
       prompt,
       HEADLESS_NOTE,
-      name ?? `${slug}: ${label}`,
-      task ?? label,
+      name,
+      task,
       resultFile,
       board.runId,
       parent ?? "",
+      stepId ?? "",
     ],
     { stdio: ["ignore", "inherit", "inherit"] },
   );
@@ -402,7 +438,7 @@ function runHarnessSession({ worktree, slug, prompt, label, name, task, parent }
     return sessionId;
   }
   log(`${label}: running off the board, as no agents-hq daemon can take it`);
-  runClaudeSession({ worktree, prompt, label });
+  await runClaudeSession({ worktree, prompt, label });
   return undefined;
 }
 
@@ -411,10 +447,10 @@ function runHarnessSession({ worktree, slug, prompt, label, name, task, parent }
 // push, so sessions skip the permission system instead of stalling behind an
 // allowlist. stdout and stderr stream straight to the terminal and are never
 // captured.
-function runClaudeSession({ worktree, prompt, label }) {
+async function runClaudeSession({ worktree, prompt, label }) {
   const args = ["-p", prompt, "--dangerously-skip-permissions", "--append-system-prompt", HEADLESS_NOTE];
   log(`${label}: claude ${args.map(quoteArg).join(" ")}`);
-  const result = spawnSync("claude", args, {
+  const result = await waitFor("claude", args, {
     cwd: worktree,
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -432,21 +468,18 @@ function hasVerifySkill(worktree) {
 
 // One headless pre-step: have a writing skill produce a missing spec file,
 // then commit it, so the loop starts from committed state as always.
-function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
+async function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
   const relative = path.join("spec", "features", slug, file);
   const target = path.join(worktree, relative);
   if (existsSync(target)) return;
   const skill = prompt.split(" ")[0];
-  const sessionId = session(prompt, `pre-step ${skill.slice(1)}`, {
+  const sessionId = await session(prompt, `pre-step ${skill.slice(1)}`, {
     name: skill.slice(1),
     task: `Write ${file}`,
   });
-  settleSession(
-    sessionId,
-    existsSync(target) ? "completed" : "failed",
-    existsSync(target) ? undefined : `It did not write ${file}.`,
-  );
-  if (!existsSync(target)) {
+  const wrote = existsSync(target);
+  settleSession(sessionId, wrote ? "completed" : "failed", wrote ? undefined : `It did not write ${file}.`);
+  if (!wrote) {
     halt(
       "pre-step failed",
       `the ${skill} session did not write ${target}; write it by hand in the worktree, commit and push, then re-kick`,
@@ -457,7 +490,7 @@ function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
   log(`pre-step committed ${relative}`);
 }
 
-function main() {
+async function main() {
   const { repo, slug } = parseArgs(process.argv.slice(2));
   if (!gitOk(repo, ["rev-parse", "--git-dir"])) fail(`${repo} is not a git repository`);
 
@@ -465,6 +498,7 @@ function main() {
   const base = baseRef(repo, branch);
   const worktree = addWorktree(repo, slug, base);
   log(`worktree ${worktree} on slices/${slug}`);
+  startRun(repo, slug);
 
   const hasOrigin = gitOk(repo, ["remote", "get-url", "origin"]);
   // A human fix may have been pushed from outside the worktree; catch up when
@@ -496,15 +530,13 @@ function main() {
 
   ensureSettings(worktree, hasOrigin);
 
-  startRun(slug);
-  const session = (prompt, label, member = {}) =>
-    runHarnessSession({ worktree, slug, prompt, label, ...member });
+  const session = (prompt, label, member) => runHarnessSession({ worktree, prompt, label, ...member });
 
   const featureDir = path.join(worktree, "spec", "features", slug);
   if (!existsSync(path.join(featureDir, "spec.md")) && !existsSync(path.join(featureDir, "decisions.md"))) {
     fail(`spec/features/${slug}/decisions.md is missing; settle the decisions and commit them first`);
   }
-  runPreStep({
+  await runPreStep({
     worktree,
     slug,
     file: "spec.md",
@@ -512,7 +544,7 @@ function main() {
     session,
     hasOrigin,
   });
-  runPreStep({
+  await runPreStep({
     worktree,
     slug,
     file: "slices.json",
@@ -522,9 +554,12 @@ function main() {
   });
 
   const slices = readSlices(worktree, slug);
+  reportSteps(planSteps(slices, sliceStates(worktree, base, slices)));
 
   let iteration = 0;
   let closeRan = false;
+  let closeSession;
+  let lastSession;
   let failingSlice = null;
   for (;;) {
     if (hasOrigin) git(worktree, ["fetch", "origin", "--quiet"]);
@@ -533,6 +568,7 @@ function main() {
 
     if (allDone && closeRan) {
       const gap = closeGap({ worktree, base, slices, slug, hasOrigin });
+      settleSession(closeSession, gap ? "failed" : "completed", gap);
       if (gap) {
         halt("close incomplete", `the close session did not finish: ${gap}; fix it or re-kick`, worktree);
       }
@@ -549,6 +585,7 @@ function main() {
           "awaiting sign-off",
           `waiting for human sign-off on ${[...states.pending].join(", ")} and nothing else is ready; sign off, then re-kick`,
           worktree,
+          { outcome: "waiting" },
         );
       }
       halt(
@@ -562,6 +599,7 @@ function main() {
         "iteration ceiling",
         `iteration ceiling: ${MAX_ITERATIONS} sessions in one kick; re-kick to continue`,
         worktree,
+        { detail: "re-kick to continue" },
       );
     }
 
@@ -572,14 +610,17 @@ function main() {
       .map((slice) => slice.id)
       .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))[0];
     const title = slices.find((slice) => slice.id === expected)?.title ?? expected;
-    const sessionId = session(`/implement-slice spec/features/${slug}/`, `iteration ${iteration}`, {
-      name: allDone ? "Close the branch" : failingSlice === expected ? `${expected} retry` : expected,
+    const retrying = failingSlice === expected;
+    if (!allDone) reportSteps(planSteps(slices, states, { running: expected }));
+    const sessionId = await session(`/implement-slice spec/features/${slug}/`, `iteration ${iteration}`, {
+      name: allDone ? "Close the branch" : retrying ? `${expected} retry` : expected,
       task: allDone ? "Close the branch and mark the PR ready" : title,
-      parent: failingSlice === expected ? board.lastSession : undefined,
+      parent: retrying ? lastSession : undefined,
+      stepId: allDone ? undefined : expected,
     });
 
     if (allDone) {
-      settleSession(sessionId, "completed");
+      closeSession = sessionId;
       closeRan = true;
       continue;
     }
@@ -592,15 +633,17 @@ function main() {
       progressed ? "completed" : "failed",
       progressed ? undefined : `No commit marked ${expected} done or pending.`,
     );
-    board.lastSession = sessionId;
+    lastSession = sessionId;
     if (!progressed) {
-      if (failingSlice === expected) {
-        halt("no progress", `no progress: slice ${expected} failed twice in a row`, worktree);
+      if (retrying) {
+        reportSteps(planSteps(slices, after, { failed: expected }));
+        halt("no progress", `no progress: slice ${expected} failed twice in a row`, worktree, { outcome: "failed" });
       }
       failingSlice = expected;
       log(`iteration ${iteration} added no trailer for ${expected}; retrying once`);
       continue;
     }
+    reportSteps(planSteps(slices, after));
     failingSlice = null;
   }
 }
