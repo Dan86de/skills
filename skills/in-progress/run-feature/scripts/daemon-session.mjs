@@ -1,0 +1,165 @@
+#!/usr/bin/env node
+// Runs one headless session through the local agents-hq daemon, so it shows on
+// the board, and returns once its turn is over and the session is ended.
+// Usage: daemon-session.mjs run-start <name> <task>            prints the run id, or nothing
+//        daemon-session.mjs run-settle <run-id> <session-id> <outcome> [detail]
+//        daemon-session.mjs run-end <run-id> <outcome> [detail]
+//        daemon-session.mjs session <cwd> <prompt> <system-prompt-note> <name> <task> <result-file> [run-id] [parent-session-id]
+// A session writes its id to <result-file>, then the run shows it live.
+// Exit codes: 0 done, 1 lost mid-run, 3 no daemon that can run it was found and
+// nothing was launched, so the caller should run it another way.
+
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
+import { settleWatch } from "./settle-watch.mjs";
+
+// The first contract version with runs, and sessionLaunch's appendSystemPrompt before them.
+const MIN_CONTRACT_VERSION = 4;
+const DEFAULT_PORT = 4760;
+const POLL_MS = 5000;
+const UNAVAILABLE = 3;
+
+const log = (message) => process.stderr.write(`[daemon-session] ${message}\n`);
+
+function tokenFile() {
+  const stateDir = process.env.AGENTS_HQ_STATE_DIR ?? path.join(os.homedir(), ".agents-hq", "state");
+  return path.join(stateDir, "token");
+}
+
+// One WebSocket with one-shot calls over it, framed as the daemon's RPC expects.
+function connect(port, token) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/rpc`, token);
+    const pending = new Map();
+    let nextId = 1;
+    const client = {
+      lost: new Promise((lostResolve) => {
+        socket.onclose = () => {
+          for (const { rejectCall } of pending.values()) rejectCall(new Error("the daemon went away"));
+          lostResolve();
+          reject(new Error("the daemon refused or dropped the connection"));
+        };
+      }),
+      call: (tag, payload) =>
+        new Promise((resolveCall, rejectCall) => {
+          const id = nextId++;
+          pending.set(String(id), { resolveCall, rejectCall });
+          socket.send(`${JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] })}\n`);
+        }),
+      close: () => socket.close(),
+    };
+    socket.onopen = () => resolve(client);
+    socket.onerror = () => {};
+    socket.onmessage = (event) => {
+      for (const line of String(event.data).split("\n")) {
+        if (line.trim() === "") continue;
+        const message = JSON.parse(line);
+        if (message._tag !== "Exit") continue;
+        const call = pending.get(String(message.requestId));
+        pending.delete(String(message.requestId));
+        if (message.exit._tag === "Success") call?.resolveCall(message.exit.value);
+        else call?.rejectCall(new Error(JSON.stringify(message.exit.cause ?? message.exit)));
+      }
+    };
+  });
+}
+
+async function availableDaemon() {
+  const port = process.env.AGENTS_HQ_PORT ?? DEFAULT_PORT;
+  if (!existsSync(tokenFile())) return null;
+  try {
+    const client = await connect(port, readFileSync(tokenFile(), "utf8").trim());
+    const info = await client.call("ping", {});
+    if (info.contractVersion >= MIN_CONTRACT_VERSION) return client;
+    log(`the daemon on port ${port} is on contract ${info.contractVersion}, which needs a restart onto ${MIN_CONTRACT_VERSION}`);
+    client.close();
+  } catch (error) {
+    log(`no daemon on port ${port}: ${error.message}`);
+  }
+  return null;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function runSession(args) {
+  const [cwd, prompt, note, name, task, resultFile, runId, parentSessionId] = args;
+  if (resultFile === undefined) {
+    log("usage: daemon-session.mjs session <cwd> <prompt> <note> <name> <task> <result-file> [run-id] [parent-session-id]");
+    process.exit(2);
+  }
+  const client = await availableDaemon();
+  if (client === null) process.exit(UNAVAILABLE);
+
+  const { sessionId } = await client.call("sessionLaunch", {
+    prompt,
+    location: { _tag: "Directory", path: cwd },
+    permissionMode: "full-access",
+    appendSystemPrompt: note,
+  });
+  writeFileSync(resultFile, sessionId);
+  await client.call("sessionRename", { sessionId, label: name });
+  if (runId) {
+    await client.call("runAttach", { runId, sessionId, name, task, ...(parentSessionId ? { parentSessionId } : {}) });
+  }
+  log(`session ${sessionId} on the board as "${name}"`);
+
+  const settled = settleWatch();
+  let waitingOnUser = false;
+  for (;; await sleep(POLL_MS)) {
+    const sessions = await client.call("sessionList", {});
+    const state = sessions.find((session) => session.sessionId === sessionId)?.state;
+    if (state === undefined) throw new Error(`session ${sessionId} was removed`);
+    if (state._tag === "Exited") {
+      log(`session ${sessionId} was ended with exit code ${state.exitCode}`);
+      client.close();
+      return;
+    }
+    if (state.activity === "blocked" && !waitingOnUser) log(`session ${sessionId} is waiting on you in the UI`);
+    waitingOnUser = state.activity === "blocked";
+    if (settled(state.activity, Date.now())) {
+      log(`session ${sessionId} settled as ${state.activity}`);
+      await client.call("sessionKill", { sessionId });
+      client.close();
+      return;
+    }
+  }
+}
+
+// A run is decoration on the sessions, so a daemon that cannot show one costs nothing.
+async function runCall(tag, payload, print) {
+  const client = await availableDaemon();
+  if (client === null) return;
+  try {
+    const value = await client.call(tag, payload);
+    if (print) process.stdout.write(print(value));
+  } catch (error) {
+    log(`${tag} failed: ${error.message}`);
+  }
+  client.close();
+}
+
+async function main() {
+  const [command, ...args] = process.argv.slice(2);
+  if (command === "session") return runSession(args);
+  if (command === "run-start") return runCall("runStart", { name: args[0], task: args[1] }, (run) => run.runId);
+  if (command === "run-settle") {
+    const [runId, sessionId, outcome, detail] = args;
+    return runCall("runSettle", { runId, sessionId, outcome, ...(detail ? { detail } : {}) });
+  }
+  if (command === "run-end") {
+    const [runId, outcome, detail] = args;
+    return runCall("runEnd", { runId, outcome, ...(detail ? { detail } : {}) });
+  }
+  log(`unknown command "${command}"`);
+  process.exit(2);
+}
+
+main().then(
+  () => process.exit(0),
+  (error) => {
+    log(`lost the session: ${error.message}`);
+    process.exit(1);
+  },
+);

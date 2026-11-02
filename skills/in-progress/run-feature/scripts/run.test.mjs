@@ -3,7 +3,7 @@
 // Covers slices S1 through S6 of spec/features/run-feature/spec.md.
 
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -178,6 +178,122 @@ const MANY_SLICES = {
   })),
 };
 
+// Stands in for the agents-hq daemon on its real wire: JSON lines over a
+// WebSocket that offers the state dir's token as a subprotocol. It logs every
+// request, runs a launched session as one stub harness process, and then lists
+// the session as exited. A separate process, because the runner blocks in
+// spawnSync while the test holds this end.
+const FAKE_DAEMON = `
+const { execFileSync } = require("node:child_process");
+const { createHash } = require("node:crypto");
+const { appendFileSync } = require("node:fs");
+const { createServer } = require("node:http");
+const [logFile, token, contractVersion] = process.argv.slice(1);
+const sessions = [];
+const answer = (tag, payload) => {
+  if (tag === "ping") return { contractVersion: Number(contractVersion) };
+  if (tag === "runStart") return { runId: "run-1" };
+  if (tag === "sessionList") {
+    return sessions.map((sessionId) => ({ sessionId, state: { _tag: "Exited", exitCode: 143 } }));
+  }
+  if (tag === "sessionLaunch") {
+    const sessionId = "session-" + (sessions.length + 1);
+    sessions.push(sessionId);
+    try {
+      execFileSync("claude", ["-p", payload.prompt], { cwd: payload.location.path, stdio: "ignore" });
+    } catch {}
+    return { sessionId };
+  }
+  return null;
+};
+const frame = (text) => {
+  const body = Buffer.from(text);
+  const head = body.length < 126 ? Buffer.from([0x81, body.length]) : Buffer.alloc(4);
+  if (body.length >= 126) {
+    head[0] = 0x81;
+    head[1] = 126;
+    head.writeUInt16BE(body.length, 2);
+  }
+  return Buffer.concat([head, body]);
+};
+const server = createServer();
+server.on("upgrade", (request, socket) => {
+  if (request.headers["sec-websocket-protocol"] !== token) return socket.destroy();
+  const accept = createHash("sha1")
+    .update(request.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+    .digest("base64");
+  socket.write(
+    "HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\n" +
+      "Sec-WebSocket-Accept: " + accept + "\\r\\nSec-WebSocket-Protocol: " + token + "\\r\\n\\r\\n",
+  );
+  socket.on("error", () => {});
+  let pending = Buffer.alloc(0);
+  socket.on("data", (chunk) => {
+    pending = Buffer.concat([pending, chunk]);
+    for (;;) {
+      if (pending.length < 2) return;
+      let length = pending[1] & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (pending.length < 4) return;
+        length = pending.readUInt16BE(2);
+        offset = 4;
+      }
+      if (pending.length < offset + 4 + length) return;
+      const mask = pending.subarray(offset, offset + 4);
+      const body = Buffer.from(pending.subarray(offset + 4, offset + 4 + length));
+      const opcode = pending[0] & 0x0f;
+      pending = pending.subarray(offset + 4 + length);
+      if (opcode === 8) return socket.destroy();
+      if (opcode !== 1) continue;
+      for (let i = 0; i < body.length; i++) body[i] ^= mask[i % 4];
+      const { id, tag, payload } = JSON.parse(body.toString().trim());
+      appendFileSync(logFile, JSON.stringify({ tag, payload }) + "\\n");
+      const exit = { _tag: "Success", value: answer(tag, payload) };
+      socket.write(frame(JSON.stringify({ _tag: "Exit", requestId: String(id), exit }) + "\\n"));
+    }
+  });
+});
+server.listen(0, "127.0.0.1", () => console.log(server.address().port));
+`;
+
+// One kick against a fake daemon on the given contract, returning what the
+// runner sent it in order.
+async function runRunnerWithDaemon(fixture, contractVersion = 5) {
+  const stateDir = path.join(fixture.tmp, "state");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(path.join(stateDir, "token"), "test-token\n");
+  const daemonLog = path.join(fixture.tmp, "daemon.log");
+  writeFileSync(daemonLog, "", { flag: "a" });
+  const claudeLog = path.join(fixture.tmp, "claude.log");
+  const daemon = spawn(
+    process.execPath,
+    ["-e", FAKE_DAEMON, daemonLog, "test-token", String(contractVersion)],
+    {
+      stdio: ["ignore", "pipe", "inherit"],
+      env: {
+        ...process.env,
+        PATH: `${fixture.bin}:${process.env.PATH}`,
+        STUB_CLAUDE_LOG: claudeLog,
+        STUB_GH_LOG: path.join(fixture.tmp, "gh.log"),
+      },
+    },
+  );
+  const port = await new Promise((resolve) => daemon.stdout.once("data", (data) => resolve(String(data).trim())));
+  try {
+    const run = runRunner(fixture, { AGENTS_HQ_STATE_DIR: stateDir, AGENTS_HQ_PORT: port });
+    const calls = readFileSync(daemonLog, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    return { ...run, calls };
+  } finally {
+    daemon.kill();
+  }
+}
+
+const callsTo = (calls, tag) => calls.filter((call) => call.tag === tag).map((call) => call.payload);
+
 function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   const {
     specFiles = true,
@@ -240,7 +356,7 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   return { tmp, repo, bin, worktree };
 }
 
-function runRunner(fixture) {
+function runRunner(fixture, env = {}) {
   const claudeLog = path.join(fixture.tmp, "claude.log");
   const ghLog = path.join(fixture.tmp, "gh.log");
   const osaLog = path.join(fixture.tmp, "osascript.log");
@@ -253,9 +369,12 @@ function runRunner(fixture) {
     env: {
       ...process.env,
       PATH: `${fixture.bin}:${process.env.PATH}`,
+      // No token here means no daemon, so a stub session never reaches a real one.
+      AGENTS_HQ_STATE_DIR: path.join(fixture.tmp, "no-daemon"),
       STUB_CLAUDE_LOG: claudeLog,
       STUB_GH_LOG: ghLog,
       STUB_OSA_LOG: osaLog,
+      ...env,
     },
   });
   return { result, claudeLog, ghLog, osaLog };
@@ -712,5 +831,56 @@ describe("run.mjs fires one end-state banner", () => {
     });
     assert.equal(result.status, 1, result.stderr);
     assert.deepEqual(bannerPayloads(osaLog), []);
+  });
+});
+
+describe("run.mjs puts the kick on the agents-hq board", () => {
+  it("runs each session through the daemon as a named member of one run", async () => {
+    const fixture = makeFixture();
+    const { result, calls, claudeLog } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(callsTo(calls, "runStart").length, 1);
+    assert.deepEqual(
+      callsTo(calls, "runAttach").map(({ name, task }) => [name, task]),
+      [
+        ["S1", "First slice"],
+        ["S2", "Second slice"],
+        ["Close the branch", "Close the branch and mark the PR ready"],
+      ],
+    );
+    assert.deepEqual(
+      callsTo(calls, "runSettle").map(({ outcome }) => outcome),
+      ["completed", "completed", "completed"],
+    );
+    assert.deepEqual(landedTrailers(fixture.repo), ["S1", "S2"]);
+    assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 3);
+  });
+
+  it("launches with full access and the headless note, and ends the run completed", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture());
+    const [launch] = callsTo(calls, "sessionLaunch");
+    assert.equal(launch.permissionMode, "full-access");
+    assert.match(launch.appendSystemPrompt, /no human can answer/);
+    assert.deepEqual(callsTo(calls, "runEnd"), [{ runId: "run-1", outcome: "completed" }]);
+  });
+
+  it("nests a retry under the attempt it follows, with the failed attempt settled", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB));
+    assert.equal(result.status, 2);
+    const [first, retry] = callsTo(calls, "runAttach");
+    assert.equal(first.name, "S1");
+    assert.equal(retry.name, "S1 retry");
+    assert.equal(retry.parentSessionId, first.sessionId);
+    assert.deepEqual(
+      callsTo(calls, "runSettle").map(({ outcome }) => outcome),
+      ["failed", "failed"],
+    );
+  });
+
+  it("falls back off the board, and says so, when no daemon can take the session", () => {
+    const fixture = makeFixture();
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /running off the board/);
   });
 });

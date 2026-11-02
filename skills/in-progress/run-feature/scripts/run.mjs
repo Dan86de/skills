@@ -8,12 +8,16 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 // One kick never starts a session beyond this ceiling.
 const MAX_ITERATIONS = 12;
@@ -61,11 +65,13 @@ const DEFAULT_SETTINGS = {
 // Exit codes: 0 clean completion, 1 bad input or environment, 2 halt.
 // A halt always keeps the worktree in place so a human can cd in and fix.
 function fail(message) {
+  board.detail = message;
   process.stderr.write(`run-feature: ${message}\n`);
   process.exit(1);
 }
 
 function halt(state, message, worktree) {
+  board.detail = message;
   notify(state);
   process.stderr.write(`run-feature: halt: ${message}\n`);
   process.stderr.write(`run-feature: worktree kept at ${worktree}\n`);
@@ -333,12 +339,79 @@ const HEADLESS_NOTE =
   "Never end the turn asking a question or waiting for input; " +
   "settle every open choice with the default you would otherwise propose, note it, and finish the task.";
 
-// The one place the harness is invoked, so a second harness stays additive.
+const DAEMON_SESSION = fileURLToPath(new URL("./daemon-session.mjs", import.meta.url));
+const DAEMON_UNAVAILABLE = 3;
+
+// What the board knows of this kick: the run it shows, the end state recorded
+// when the process exits, and the last session, which a retry nests under.
+const board = { runId: "", outcome: "failed", detail: undefined, lastSession: undefined };
+
+function daemonCall(...args) {
+  return spawnSync(process.execPath, [DAEMON_SESSION, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+}
+
+function startRun(slug) {
+  board.runId = daemonCall("run-start", slug, `Run the ${slug} feature to a ready PR`).stdout?.trim() ?? "";
+  if (board.runId === "") return;
+  process.on("exit", () => {
+    daemonCall("run-end", board.runId, board.outcome, ...(board.detail === undefined ? [] : [board.detail]));
+  });
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    process.on(signal, () => {
+      board.outcome = "stopped";
+      board.detail = `The run received ${signal}.`;
+      process.exit(2);
+    });
+  }
+}
+
+function settleSession(sessionId, outcome, detail) {
+  if (board.runId === "" || sessionId === undefined) return;
+  daemonCall("run-settle", board.runId, sessionId, outcome, ...(detail === undefined ? [] : [detail]));
+}
+
+// A session runs through the local agents-hq daemon when one can take it, so it
+// shows on the board and can be stopped there; otherwise directly, off the board.
+// Returns its session id on the board.
+function runHarnessSession({ worktree, slug, prompt, label, name, task, parent }) {
+  const scratch = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
+  const resultFile = path.join(scratch, "session-id");
+  const viaDaemon = spawnSync(
+    process.execPath,
+    [
+      DAEMON_SESSION,
+      "session",
+      worktree,
+      prompt,
+      HEADLESS_NOTE,
+      name ?? `${slug}: ${label}`,
+      task ?? label,
+      resultFile,
+      board.runId,
+      parent ?? "",
+    ],
+    { stdio: ["ignore", "inherit", "inherit"] },
+  );
+  const sessionId = existsSync(resultFile) ? readFileSync(resultFile, "utf8") : undefined;
+  rmSync(scratch, { recursive: true, force: true });
+  if (viaDaemon.status !== DAEMON_UNAVAILABLE) {
+    log(`${label}: daemon session ended with exit code ${viaDaemon.status}`);
+    return sessionId;
+  }
+  log(`${label}: running off the board, as no agents-hq daemon can take it`);
+  runClaudeSession({ worktree, prompt, label });
+  return undefined;
+}
+
+// The one place the harness is invoked directly, so a second harness stays additive.
 // The worktree is dedicated and the loop is already trusted to commit and
 // push, so sessions skip the permission system instead of stalling behind an
 // allowlist. stdout and stderr stream straight to the terminal and are never
 // captured.
-function runHarnessSession({ worktree, prompt, label }) {
+function runClaudeSession({ worktree, prompt, label }) {
   const args = ["-p", prompt, "--dangerously-skip-permissions", "--append-system-prompt", HEADLESS_NOTE];
   log(`${label}: claude ${args.map(quoteArg).join(" ")}`);
   const result = spawnSync("claude", args, {
@@ -364,7 +437,15 @@ function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
   const target = path.join(worktree, relative);
   if (existsSync(target)) return;
   const skill = prompt.split(" ")[0];
-  session(prompt, `pre-step ${skill.slice(1)}`);
+  const sessionId = session(prompt, `pre-step ${skill.slice(1)}`, {
+    name: skill.slice(1),
+    task: `Write ${file}`,
+  });
+  settleSession(
+    sessionId,
+    existsSync(target) ? "completed" : "failed",
+    existsSync(target) ? undefined : `It did not write ${file}.`,
+  );
   if (!existsSync(target)) {
     halt(
       "pre-step failed",
@@ -415,7 +496,9 @@ function main() {
 
   ensureSettings(worktree, hasOrigin);
 
-  const session = (prompt, label) => runHarnessSession({ worktree, prompt, label });
+  startRun(slug);
+  const session = (prompt, label, member = {}) =>
+    runHarnessSession({ worktree, slug, prompt, label, ...member });
 
   const featureDir = path.join(worktree, "spec", "features", slug);
   if (!existsSync(path.join(featureDir, "spec.md")) && !existsSync(path.join(featureDir, "decisions.md"))) {
@@ -454,6 +537,8 @@ function main() {
         halt("close incomplete", `the close session did not finish: ${gap}; fix it or re-kick`, worktree);
       }
       removeWorktree(repo, worktree);
+      board.outcome = "completed";
+      board.detail = undefined;
       notify("complete");
       log(`all ${slices.length} slices done, branch closed, worktree removed`);
       process.exit(0);
@@ -486,16 +571,29 @@ function main() {
     const expected = states.ready
       .map((slice) => slice.id)
       .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))[0];
-    session(`/implement-slice spec/features/${slug}/`, `iteration ${iteration}`);
+    const title = slices.find((slice) => slice.id === expected)?.title ?? expected;
+    const sessionId = session(`/implement-slice spec/features/${slug}/`, `iteration ${iteration}`, {
+      name: allDone ? "Close the branch" : failingSlice === expected ? `${expected} retry` : expected,
+      task: allDone ? "Close the branch and mark the PR ready" : title,
+      parent: failingSlice === expected ? board.lastSession : undefined,
+    });
 
     if (allDone) {
+      settleSession(sessionId, "completed");
       closeRan = true;
       continue;
     }
     // Progress is a grown done or pending set, so a pending slice turning
     // done still counts even though the combined count stays constant.
     const after = sliceStates(worktree, base, slices);
-    if (after.done.size <= states.done.size && after.pending.size <= states.pending.size) {
+    const progressed = after.done.size > states.done.size || after.pending.size > states.pending.size;
+    settleSession(
+      sessionId,
+      progressed ? "completed" : "failed",
+      progressed ? undefined : `No commit marked ${expected} done or pending.`,
+    );
+    board.lastSession = sessionId;
+    if (!progressed) {
       if (failingSlice === expected) {
         halt("no progress", `no progress: slice ${expected} failed twice in a row`, worktree);
       }
