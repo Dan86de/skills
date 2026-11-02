@@ -2,6 +2,7 @@
 // run-feature: loop implement-slice sessions in a dedicated worktree until
 // every slice of a feature is committed and the branch is closed.
 // State is read only from git trailers and slices.json, never from harness stdout.
+// The one exception is closeGap, which asks gh whether the PR left draft.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -289,6 +290,37 @@ function sliceStates(worktree, base, slices) {
   return { done, pending, ready };
 }
 
+// What the close session left undone, or null. A session can end without
+// finishing, so "complete" is only reported on what it actually left behind.
+// A hitl slice's manual items were confirmed through sign-off, so only the
+// other slices' items need the checklist.
+function closeGap({ worktree, base, slices, slug, hasOrigin }) {
+  const needsChecks = slices.some(
+    (slice) => slice.autonomy !== "hitl" && slice.done?.manual?.length > 0,
+  );
+  if (needsChecks) {
+    const trailers = git(worktree, [
+      "log",
+      "--format=%(trailers:key=Manual-Checks,valueonly)",
+      `${base}..HEAD`,
+    ]);
+    if (trailers === "") return "no commit with a Manual-Checks trailer, so the PR has no checklist";
+  }
+  if (!hasOrigin) return null;
+  const view = spawnSync("gh", ["pr", "view", `slices/${slug}`, "--json", "isDraft"], {
+    cwd: worktree,
+    encoding: "utf8",
+  });
+  let isDraft;
+  try {
+    ({ isDraft } = JSON.parse(view.stdout));
+  } catch {
+    isDraft = undefined;
+  }
+  if (typeof isDraft !== "boolean") return `could not confirm the PR state through gh for slices/${slug}`;
+  return isDraft ? "the PR is still a draft" : null;
+}
+
 function quoteArg(arg) {
   return /[\s"]/.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg;
 }
@@ -417,6 +449,10 @@ function main() {
     const allDone = slices.every((slice) => states.done.has(slice.id));
 
     if (allDone && closeRan) {
+      const gap = closeGap({ worktree, base, slices, slug, hasOrigin });
+      if (gap) {
+        halt("close incomplete", `the close session did not finish: ${gap}; fix it or re-kick`, worktree);
+      }
       removeWorktree(repo, worktree);
       notify("complete");
       log(`all ${slices.length} slices done, branch closed, worktree removed`);

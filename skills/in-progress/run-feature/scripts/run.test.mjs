@@ -67,6 +67,10 @@ const next = slices.find(
   (s) => !done.has(s.id) && !pending.has(s.id) && s.blocked_by.every((b) => done.has(b)),
 );
 if (!next) {
+  if (slices.some((s) => s.autonomy !== "hitl" && s.done?.manual?.length > 0)) {
+    git("commit", "--allow-empty", "-m", "Manual checks\\n\\n- S1: Looks right\\n\\nManual-Checks: 1");
+    git("push", "--quiet", "origin", "HEAD");
+  }
   execFileSync("gh", ["pr", "ready", "demo"]);
 } else {
   const trailer = (next.autonomy === "hitl" ? "Slice-Pending: " : "Slice: ") + next.id;
@@ -76,9 +80,30 @@ if (!next) {
 `;
 
 const GH_STUB = `#!/usr/bin/env node
-const { appendFileSync } = require("node:fs");
-appendFileSync(process.env.STUB_GH_LOG, process.argv.slice(2).join(" ") + "\\n");
+// Answers pr view from whether this run already logged a pr ready.
+const { appendFileSync, readFileSync } = require("node:fs");
+const args = process.argv.slice(2).join(" ");
+if (args.startsWith("pr view")) {
+  const log = readFileSync(process.env.STUB_GH_LOG, "utf8");
+  console.log(JSON.stringify({ isDraft: !log.includes("pr ready") }));
+}
+appendFileSync(process.env.STUB_GH_LOG, args + "\\n");
 `;
+
+// Close sessions that end early, each leaving a different part undone.
+const CLOSE_SKIPS_CHECKS_STUB = CLAUDE_STUB.replace(
+  'git("commit", "--allow-empty", "-m", "Manual checks',
+  'if (false) git("commit", "--allow-empty", "-m", "Manual checks',
+);
+const CLOSE_STAYS_DRAFT_STUB = CLAUDE_STUB.replace(
+  '  execFileSync("gh", ["pr", "ready", "demo"]);',
+  '  console.log("close session stopped before marking the PR ready");',
+);
+// An origin-less session: nothing to push to and no PR to mark ready.
+const LOCAL_ONLY_STUB = CLOSE_STAYS_DRAFT_STUB.replaceAll("origin/main..HEAD", "main..HEAD").replaceAll(
+  'git("push", "--quiet", "origin", "HEAD");',
+  "",
+);
 
 const OSASCRIPT_STUB = `#!/usr/bin/env node
 const { appendFileSync } = require("node:fs");
@@ -111,6 +136,35 @@ const HITL_SLICES = {
   slices: [
     { id: "S1", title: "Needs sign-off", blocked_by: [], autonomy: "hitl" },
     { id: "S2", title: "Second slice", blocked_by: ["S1"], autonomy: "afk" },
+  ],
+};
+
+// S1 has a check for a person; it blocks nothing, so S2 still gets built.
+const DEFERRED_SLICES = {
+  spec: SLICES.spec,
+  slices: [
+    {
+      id: "S1",
+      title: "Has a manual check",
+      blocked_by: [],
+      autonomy: "afk",
+      done: { automated: [], manual: ["Looks right"] },
+    },
+    { id: "S2", title: "Second slice", blocked_by: ["S1"], autonomy: "afk" },
+  ],
+};
+
+// A hitl slice whose manual item gets confirmed through sign-off.
+const HITL_WITH_MANUAL_SLICES = {
+  spec: SLICES.spec,
+  slices: [
+    {
+      id: "S1",
+      title: "Needs a secret",
+      blocked_by: [],
+      autonomy: "hitl",
+      done: { automated: [], manual: ["Secret works"] },
+    },
   ],
 };
 
@@ -367,6 +421,64 @@ if (attempts === 1) {
   });
 });
 
+describe("run.mjs defers manual checks to the ready PR", () => {
+  it("an afk slice with manual checks does not halt: dependents run and the PR goes ready", () => {
+    const fixture = makeFixture(CLAUDE_STUB, DEFERRED_SLICES);
+    const { result, ghLog } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(landedTrailers(fixture.repo), ["S1", "S2"]);
+    assert.equal(
+      git(fixture.repo, "log", "-1", "--format=%(trailers:key=Manual-Checks,valueonly)", "origin/slices/demo"),
+      "1",
+    );
+    assert.match(readFileSync(ghLog, "utf8"), /pr ready/);
+    assert.ok(!existsSync(fixture.worktree), "worktree should be removed");
+  });
+
+  it("a close that writes no checklist halts as close incomplete and keeps the worktree", () => {
+    const fixture = makeFixture(CLOSE_SKIPS_CHECKS_STUB, DEFERRED_SLICES);
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /no commit with a Manual-Checks trailer/);
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+  });
+
+  it("a close that leaves the PR in draft halts for any feature, with or without checks", () => {
+    const fixture = makeFixture(CLOSE_STAYS_DRAFT_STUB);
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /the PR is still a draft/);
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+  });
+
+  it("a PR state gh cannot report halts rather than claiming success", () => {
+    const fixture = makeFixture();
+    writeFileSync(path.join(fixture.bin, "gh"), "#!/usr/bin/env node\nprocess.exit(1);\n");
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /could not confirm the PR state/);
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+  });
+
+  it("with no origin, the trailer check runs alone and gh is never asked", () => {
+    const fixture = makeFixture(LOCAL_ONLY_STUB, DEFERRED_SLICES, { origin: false });
+    const { result, ghLog } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(ghLog, "utf8"), "");
+  });
+
+  it("a signed-off hitl slice's manual items need no checklist", () => {
+    const fixture = makeFixture(CLAUDE_STUB, HITL_WITH_MANUAL_SLICES);
+    const first = runRunner(fixture);
+    assert.equal(first.result.status, 2, first.result.stderr);
+    assert.match(first.result.stderr, /waiting for human sign-off on S1/);
+    git(fixture.worktree, "commit", "--allow-empty", "-m", "Sign off S1\n\nConfirmed.\n\nSlice: S1");
+    git(fixture.worktree, "push", "--quiet", "origin", "HEAD");
+    const second = runRunner(fixture);
+    assert.equal(second.result.status, 0, second.result.stderr);
+  });
+});
+
 describe("run.mjs runs the pre-steps headlessly and gates on the verify skill", () => {
   // One run from a fixture holding only a committed decisions.md.
   let fixture;
@@ -565,6 +677,7 @@ describe("run.mjs fires one end-state banner", () => {
       ["complete", makeFixture()],
       ["no progress", makeFixture(IDLE_STUB)],
       ["awaiting sign-off", makeFixture(CLAUDE_STUB, HITL_SLICES)],
+      ["close incomplete", makeFixture(CLOSE_STAYS_DRAFT_STUB)],
       ["iteration ceiling", makeFixture(CLAUDE_STUB, MANY_SLICES)],
       ["worktree not removed", makeFixture(dirtyCloseStub)],
       ["no verify skill", makeFixture(CLAUDE_STUB, SLICES, { verifySkill: false })],

@@ -25,6 +25,7 @@ Harvest:
 
 - **findings**: `Open:` lines from review blocks, with SHA, except those whose outcome is `fixed` (outcomes as review-change's Report defines them; a `stands` finding stays, with its reason); every `Deviations:` item (a spec departure the implementer chose) and anything left for the reviewer is a `[question]`
 - **pending sign-offs**: `Awaiting sign-off:` items of a `Slice-Pending: <id>` commit with no `Slice: <id>` commit; off a slice branch, items with no later commit subject starting `Sign off`
+- **manual checks**: the items of the latest commit with a `Manual-Checks:` trailer, each with its slice id, check, reach line and steps, in that commit's order; with no such commit, the `Awaiting sign-off:` items of `Slice: <id>` commits, check only
 - **proof**: verify runs, passing tests, before and after output, images
 
 ## 3. Start the assessor
@@ -49,7 +50,7 @@ Run nothing to produce evidence, and claim a test failed before the change only 
 | Level | Any of these |
 | --- | --- |
 | `read` | one-way door; a `[blocks]` finding or `possible bug` question open at `HEAD`; a pending sign-off; `Evidence: none`; a self-graded verdict |
-| `spot-check` | two-way with wide blast radius; any other `[question]` open at `HEAD`; over the step 7 budget |
+| `spot-check` | two-way with wide blast radius; any other `[question]` open at `HEAD`; an unticked manual check; over the step 7 budget |
 | `skim` | none of the above |
 
 Highest match wins; `[judgement]` findings never count; every reason cites its trigger.
@@ -64,6 +65,13 @@ Highest match wins; `[judgement]` findings never count; every reason cites its t
 
 Read first:
 - <file:line> - <why>
+
+## Before you merge
+
+<!-- manual-checks: <full SHA of the commit they came from> -->
+- [ ] <check> <!-- <slice id> -->
+  **Reach:** <reach line>
+  1. <step>
 
 ## Summary
 
@@ -93,8 +101,10 @@ Read first:
 
 - `Read first` is the assessor's list; on `skim` drop it and the reason reads `- two-way, localized, with evidence`.
 - Fill remaining template headings; tick checklists only on evidence.
+- `Before you merge` lists the manual checks in harvested order, never re-sorted, and is dropped when there are none; the id comment stays hidden on GitHub.
+- On a rerun, keep the tick of each check whose id and text match the existing section, unless its id is in the `Retest:` trailer of a `Manual-Checks:` commit after the SHA in that section's comment; a rerun never carries the old section into the build log.
 - The build log holds the rest of the existing body verbatim; on a rerun, unwrap it first so nothing nests, and omit it when empty.
-- Above the build log, stay within about 40 lines, else add `too big to summarise in one screen` as a `spot-check` reason.
+- Above the build log, not counting `Before you merge`, stay within about 40 lines, else add `too big to summarise in one screen` as a `spot-check` reason.
 
 ## 8. Apply
 

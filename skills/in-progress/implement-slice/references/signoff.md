@@ -1,6 +1,7 @@
 # Sign-off
 
 `--signoff S4` records that the user has checked a pending slice.
+Only a `hitl` slice is ever pending; every other manual check is ticked in the PR's `## Before you merge`.
 
 Refuse when S4 is not pending.
 Show its `Awaiting sign-off:` list and its PR section, and ask the user to confirm each item.

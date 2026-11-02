@@ -30,9 +30,10 @@ Progress lives only in git: a slice is done when its commit is on the branch.
 
    **Done** has `Slice: <id>`, **pending** has only `Slice-Pending: <id>`, **ready** has neither and every `blocked_by` done, **blocked** is the rest.
    With `--signoff <id>`, follow [references/signoff.md](references/signoff.md) instead.
+   With `--rework <id> "<what failed>"`, follow [references/rework.md](references/rework.md) instead.
    Refuse a named slice that is done, or blocked (name the blocker); take it if it is ready or pending (rework).
    With none named, take the lowest ready id.
-   If every slice is done and the PR has no `## Branch review` yet, go to step 9; if nothing is ready, say what is pending or blocked by what, and end the turn.
+   If every slice is done and the PR is still a draft, go to step 9; if nothing is ready, say what is pending or blocked by what, and end the turn.
    Open your reply with it, for example `Slice S3: Reject a malformed header (also ready: S5)`.
 
 5. **Build it** from pointers only: the spec's claimed Behaviour entries and Seams, the slice's `seam`, `done` and `scope`, the verify skill and map, and `git show` of each blocker's commit.
@@ -76,18 +77,21 @@ Progress lives only in git: a slice is done when its commit is on the branch.
    ```
 
    `Deviations:` reads `- none` when there were none.
-   A `hitl` slice lists its `done.manual` items under `Awaiting sign-off:` after the checks, with trailer `Slice-Pending: S3`.
+   A slice with `done.manual` items lists them under `Awaiting sign-off:` after the checks.
+   They block nothing, so the trailer stays `Slice: S3`; only a `hitl` slice takes `Slice-Pending: S3` instead.
    The first commit opens a draft PR to the default branch, titled as the spec, its body one line per slice (id, title, blockers) then `## Slices`.
    After each commit, append the slice's section to `## Slices`, rendered from the commit per [references/pr-section.md](references/pr-section.md).
 
 9. **Close the branch** once every slice is done.
    Call the Skill tool with "review-change" and the default branch, the only review that sees duplication between slices, and check the branch against the spec yourself.
    Fix every `blocks` finding and spec gap, regate what the fixes touched, mark the block as in step 7, commit as `Address review` with proof and block, push, and render it under `## Branch review` per [references/pr-section.md](references/pr-section.md).
+   When a commit carrying `Slice: <id>` lists `Awaiting sign-off:` items, write the checklist per [references/manual-checks.md](references/manual-checks.md), last, so it describes the finished branch.
    Call the Skill tool with "pr-brief", then mark the PR ready for review.
+   Resuming a close that stopped partway, skip what is already on the branch and still current.
 
 ## Report
 
-The slice and its state, the commit and PR, the verify run, the review's `Open` lines not marked `fixed`, any deviations, the PR's attention level after step 9, and what is ready next.
+The slice and its state, the commit and PR, the verify run, the review's `Open` lines not marked `fixed`, any deviations, the PR's attention level and number of manual checks after step 9, and what is ready next.
 
 ## Guardrails
 
