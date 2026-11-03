@@ -8,7 +8,8 @@
 //        daemon-session.mjs session <cwd> <prompt> <system-prompt-note> <name> <task> <result-file> [run-id] [parent-session-id] [step-id]
 // A session writes its id to <result-file>, then the run shows it live.
 // Exit codes: 0 done, 1 lost mid-run, 3 no daemon that can run it was found and
-// nothing was launched, so the caller should run it another way.
+// nothing was launched, so the caller should run it another way, 4 ended by
+// someone else through the daemon, usually a person on the board.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -21,6 +22,10 @@ const MIN_CONTRACT_VERSION = 5;
 const DEFAULT_PORT = 4760;
 const POLL_MS = 5000;
 const UNAVAILABLE = 3;
+const ENDED_BY_SOMEONE_ELSE = 4;
+// The exit code the daemon gives a session ended through sessionKill. The watch
+// returns as soon as it sends its own kill, so seeing this means it did not send it.
+const KILLED = 143;
 
 const log = (message) => process.stderr.write(`[daemon-session] ${message}\n`);
 
@@ -38,6 +43,9 @@ function connect(port, token) {
     const client = {
       call: (tag, payload) =>
         new Promise((resolveCall, rejectCall) => {
+          // A closed socket drops a send without a word, and a call that never settles
+          // lets this process run out of work and exit 0 as if the session were done.
+          if (socket.readyState !== WebSocket.OPEN) return rejectCall(new Error("the daemon went away"));
           const id = nextId++;
           pending.set(String(id), { resolveCall, rejectCall });
           socket.send(`${JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] })}\n`);
@@ -123,6 +131,7 @@ async function runSession(args) {
     if (state._tag === "Exited") {
       log(`session ${sessionId} was ended with exit code ${state.exitCode}`);
       client.close();
+      if (state.exitCode === KILLED) process.exit(ENDED_BY_SOMEONE_ELSE);
       return;
     }
     if (state.activity === "blocked" && !waitingOnUser) log(`session ${sessionId} is waiting on you in the UI`);

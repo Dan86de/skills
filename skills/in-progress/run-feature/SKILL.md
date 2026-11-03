@@ -38,6 +38,7 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
   With no `origin`, the trailer check runs alone.
   Either failing is a `close incomplete` halt.
 - A kept worktree from a halted run is resumed by typing the same command again once its tree is committed or clean; nothing resumes on its own, and a foreign directory at the worktree path refuses.
+- A session the daemon loses halts as `session lost` and one ended on the board halts as `session ended`, with no retry for either: a lost session may still be working in the worktree, and a person who ended one wants the kick to stop.
 - A failed iteration gets one retry; the same slice failing twice in a row halts, as does the 12-session ceiling per kick and a `hitl` slice, one needing an action only a person can take, with nothing else ready.
 - Exit codes: 0 is clean completion with the worktree removed and the branch and PR intact; 1 is bad input or environment; 2 is a halt, which always keeps the worktree so a human can cd in and fix.
 - Every end state, success or halt, fires exactly one macOS banner with sound carrying only the end state name; detail stays in the terminal output and the PR, and a machine that cannot show the banner just logs that it was skipped.

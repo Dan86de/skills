@@ -343,7 +343,9 @@ const HEADLESS_NOTE =
   "settle every open choice with the default you would otherwise propose, note it, and finish the task.";
 
 const DAEMON_SESSION = fileURLToPath(new URL("./daemon-session.mjs", import.meta.url));
+const DAEMON_LOST = 1;
 const DAEMON_UNAVAILABLE = 3;
+const DAEMON_ENDED_BY_SOMEONE_ELSE = 4;
 
 // What the board knows of this kick: the run it shows and the end state recorded
 // when the process exits.
@@ -373,6 +375,10 @@ function startRun(repo, slug) {
   board.runId = daemonCall("run-start", slug, `Run the ${slug} feature to a ready PR`, key).stdout?.trim() ?? "";
   if (board.runId === "") return;
   process.on("exit", () => {
+    // No session outlives the kick on purpose, so no step should read as running.
+    if (board.lastSteps !== "") {
+      reportSteps(JSON.parse(board.lastSteps).map((step) => (step.state === "running" ? { ...step, state: "pending" } : step)));
+    }
     daemonCall("run-end", board.runId, board.outcome, board.detail ?? "");
   });
   for (const signal of ["SIGTERM", "SIGINT"]) {
@@ -433,6 +439,20 @@ async function runHarnessSession({ worktree, prompt, label, name, task, parent, 
   );
   const sessionId = existsSync(resultFile) ? readFileSync(resultFile, "utf8") : undefined;
   rmSync(scratch, { recursive: true, force: true });
+  // Both halt rather than retry. A lost session may still be working in this
+  // worktree, and a person who ended one wants the kick to stop.
+  if (viaDaemon.status === DAEMON_LOST) {
+    halt(
+      "session lost",
+      `lost ${sessionId ?? "a session being launched"} on the daemon, so it may still be working in the worktree; check the board, then re-kick`,
+      worktree,
+    );
+  }
+  if (viaDaemon.status === DAEMON_ENDED_BY_SOMEONE_ELSE) {
+    const reason = `${sessionId} was ended on the board; re-kick to continue`;
+    settleSession(sessionId, "stopped", reason);
+    halt("session ended", reason, worktree);
+  }
   if (viaDaemon.status !== DAEMON_UNAVAILABLE) {
     log(`${label}: daemon session ended with exit code ${viaDaemon.status}`);
     return sessionId;

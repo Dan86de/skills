@@ -189,13 +189,13 @@ const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { appendFileSync } = require("node:fs");
 const { createServer } = require("node:http");
-const [logFile, token, contractVersion, failingTag] = process.argv.slice(1);
+const [logFile, token, contractVersion, failingTag, exitCode] = process.argv.slice(1);
 const sessions = [];
 const answer = (tag, payload) => {
   if (tag === "ping") return { contractVersion: Number(contractVersion) };
   if (tag === "runStart") return { runId: "run-1" };
   if (tag === "sessionList") {
-    return sessions.map((sessionId) => ({ sessionId, state: { _tag: "Exited", exitCode: 143 } }));
+    return sessions.map((sessionId) => ({ sessionId, state: { _tag: "Exited", exitCode: Number(exitCode) } }));
   }
   if (tag === "sessionLaunch") {
     const sessionId = "session-" + (sessions.length + 1);
@@ -250,6 +250,7 @@ server.on("upgrade", (request, socket) => {
       for (let i = 0; i < body.length; i++) body[i] ^= mask[i % 4];
       const { id, tag, payload } = JSON.parse(body.toString().trim());
       appendFileSync(logFile, JSON.stringify({ tag, payload }) + "\\n");
+      if (failingTag === "drop:" + tag) return socket.destroy();
       const exit =
         tag === failingTag
           ? { _tag: "Failure", cause: { message: "refused" } }
@@ -261,7 +262,7 @@ server.on("upgrade", (request, socket) => {
 server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 `;
 
-async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "") {
+async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", exitCode = 0) {
   const stateDir = path.join(fixture.tmp, "state");
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(path.join(stateDir, "token"), "test-token\n");
@@ -270,7 +271,7 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "") {
   const claudeLog = path.join(fixture.tmp, "claude.log");
   const daemon = spawn(
     process.execPath,
-    ["-e", FAKE_DAEMON, daemonLog, "test-token", String(contractVersion), failingTag],
+    ["-e", FAKE_DAEMON, daemonLog, "test-token", String(contractVersion), failingTag, String(exitCode)],
     {
       stdio: ["ignore", "pipe", "inherit"],
       env: {
@@ -291,8 +292,8 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "") {
 
 // One kick against a fake daemon on the given contract, returning what the
 // runner sent it in order.
-async function runRunnerWithDaemon(fixture, contractVersion, failingTag) {
-  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag);
+async function runRunnerWithDaemon(fixture, contractVersion, failingTag, exitCode) {
+  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag, exitCode);
   try {
     const run = runRunner(fixture, daemonEnv);
     const calls = readFileSync(daemonLog, "utf8")
@@ -1013,6 +1014,39 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     assert.deepEqual(callsTo(calls, "runEnd"), [
       { runId: "run-1", outcome: "failed", detail: "no progress: slice S1 failed twice in a row" },
     ]);
+  });
+
+  it("a session ended on the board halts the kick instead of retrying it", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "", 143);
+    assert.equal(result.status, 2);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 1);
+    assert.deepEqual(callsTo(calls, "runSettle").map(({ outcome }) => outcome), ["stopped"]);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /session-1 was ended on the board/);
+    assert.equal(planOf(calls).at(-1), "S1 pending, S2 pending");
+  });
+
+  it("a session that ends on its own without progress still gets its retry", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "", 1);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 2);
+  });
+
+  it("a watcher that loses a session halts rather than start a second one beside it", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "sessionList");
+    assert.equal(result.status, 2);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 1);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /lost session-1/);
+    assert.equal(planOf(calls).at(-1), "S1 pending, S2 pending");
+  });
+
+  it("a connection that drops mid-watch counts as losing the session, not finishing it", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "drop:sessionRename");
+    assert.equal(result.status, 2);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 1);
+    assert.match(callsTo(calls, "runEnd")[0].detail, /lost session-1/);
   });
 
   it("nothing ready ends the run stopped with the reason", async () => {
