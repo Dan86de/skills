@@ -4,16 +4,20 @@
 // State is read only from git trailers and slices.json, never from harness stdout.
 // The one exception is closeGap, which asks gh whether the PR left draft.
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 // One kick never starts a session beyond this ceiling.
 const MAX_ITERATIONS = 12;
@@ -61,11 +65,16 @@ const DEFAULT_SETTINGS = {
 // Exit codes: 0 clean completion, 1 bad input or environment, 2 halt.
 // A halt always keeps the worktree in place so a human can cd in and fix.
 function fail(message) {
+  board.detail = message;
   process.stderr.write(`run-feature: ${message}\n`);
   process.exit(1);
 }
 
-function halt(state, message, worktree) {
+// A halt reads Stopped on the board unless it says otherwise: only a person
+// being needed and a double failure read as anything else.
+function halt(state, message, worktree, { outcome = "stopped", detail = message } = {}) {
+  board.outcome = outcome;
+  board.detail = detail;
   notify(state);
   process.stderr.write(`run-feature: halt: ${message}\n`);
   process.stderr.write(`run-feature: worktree kept at ${worktree}\n`);
@@ -333,15 +342,135 @@ const HEADLESS_NOTE =
   "Never end the turn asking a question or waiting for input; " +
   "settle every open choice with the default you would otherwise propose, note it, and finish the task.";
 
-// The one place the harness is invoked, so a second harness stays additive.
+const DAEMON_SESSION = fileURLToPath(new URL("./daemon-session.mjs", import.meta.url));
+const DAEMON_LOST = 1;
+const DAEMON_UNAVAILABLE = 3;
+const DAEMON_ENDED_BY_SOMEONE_ELSE = 4;
+
+// What the board knows of this kick: the run it shows and the end state recorded
+// when the process exits.
+const board = { runId: "", outcome: "failed", detail: undefined, lastSteps: "" };
+
+function daemonCall(...args) {
+  return spawnSync(process.execPath, [DAEMON_SESSION, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+}
+
+// A kick spends its life waiting on sessions, and a signal handler can only run
+// while the process waits without blocking, so sessions never use spawnSync.
+function waitFor(command, args, options) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, options);
+    child.once("error", (error) => resolve({ status: null, error }));
+    child.once("close", (status) => resolve({ status }));
+  });
+}
+
+// The key makes every kick of this feature in this repo reopen one run, so its
+// cost and time stay whole. The name is the slug, which the card shows.
+function startRun(repo, slug) {
+  const key = `${realpathSync(repo)}:${slug}`;
+  board.runId = daemonCall("run-start", slug, `Run the ${slug} feature to a ready PR`, key).stdout?.trim() ?? "";
+  if (board.runId === "") return;
+  process.on("exit", () => {
+    // No session outlives the kick on purpose, so no step should read as running.
+    if (board.lastSteps !== "") {
+      reportSteps(JSON.parse(board.lastSteps).map((step) => (step.state === "running" ? { ...step, state: "pending" } : step)));
+    }
+    daemonCall("run-end", board.runId, board.outcome, board.detail ?? "");
+  });
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    process.on(signal, () => {
+      board.outcome = "stopped";
+      board.detail = `The run received ${signal}.`;
+      process.exit(2);
+    });
+  }
+}
+
+// The plan as git has it, plus what this kick knows and git cannot say yet: the
+// slice a session is on now, and the slice that just failed for good.
+function planSteps(slices, { done, pending }, { running, failed } = {}) {
+  const state = ({ id }) => {
+    if (done.has(id)) return "done";
+    if (pending.has(id)) return "waiting";
+    if (id === failed) return "failed";
+    return id === running ? "running" : "pending";
+  };
+  return slices.map((slice) => ({ id: slice.id, title: slice.title ?? slice.id, state: state(slice) }));
+}
+
+// The daemon takes the plan whole, so only a change is worth a call.
+function reportSteps(steps) {
+  const sent = JSON.stringify(steps);
+  if (board.runId === "" || sent === board.lastSteps) return;
+  board.lastSteps = sent;
+  daemonCall("run-steps", board.runId, sent);
+}
+
+function settleSession(sessionId, outcome, detail) {
+  if (board.runId === "" || sessionId === undefined) return;
+  daemonCall("run-settle", board.runId, sessionId, outcome, detail ?? "");
+}
+
+// Through the local agents-hq daemon when one can take it, so it shows on the board and
+// can be stopped there; otherwise directly, off the board, with no session id to return.
+async function runHarnessSession({ worktree, prompt, label, name, task, parent, stepId }) {
+  const scratch = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
+  const resultFile = path.join(scratch, "session-id");
+  const viaDaemon = await waitFor(
+    process.execPath,
+    [
+      DAEMON_SESSION,
+      "session",
+      worktree,
+      prompt,
+      HEADLESS_NOTE,
+      name,
+      task,
+      resultFile,
+      board.runId,
+      parent ?? "",
+      stepId ?? "",
+    ],
+    { stdio: ["ignore", "inherit", "inherit"] },
+  );
+  const sessionId = existsSync(resultFile) ? readFileSync(resultFile, "utf8") : undefined;
+  rmSync(scratch, { recursive: true, force: true });
+  // Both halt rather than retry. A lost session may still be working in this
+  // worktree, and a person who ended one wants the kick to stop.
+  if (viaDaemon.status === DAEMON_LOST) {
+    halt(
+      "session lost",
+      `lost ${sessionId ?? "a session being launched"} on the daemon, so it may still be working in the worktree; check the board, then re-kick`,
+      worktree,
+    );
+  }
+  if (viaDaemon.status === DAEMON_ENDED_BY_SOMEONE_ELSE) {
+    const reason = `${sessionId} was ended on the board; re-kick to continue`;
+    settleSession(sessionId, "stopped", reason);
+    halt("session ended", reason, worktree);
+  }
+  if (viaDaemon.status !== DAEMON_UNAVAILABLE) {
+    log(`${label}: daemon session ended with exit code ${viaDaemon.status}`);
+    return sessionId;
+  }
+  log(`${label}: running off the board, as no agents-hq daemon can take it`);
+  await runClaudeSession({ worktree, prompt, label });
+  return undefined;
+}
+
+// The one place the harness is invoked directly, so a second harness stays additive.
 // The worktree is dedicated and the loop is already trusted to commit and
 // push, so sessions skip the permission system instead of stalling behind an
 // allowlist. stdout and stderr stream straight to the terminal and are never
 // captured.
-function runHarnessSession({ worktree, prompt, label }) {
+async function runClaudeSession({ worktree, prompt, label }) {
   const args = ["-p", prompt, "--dangerously-skip-permissions", "--append-system-prompt", HEADLESS_NOTE];
   log(`${label}: claude ${args.map(quoteArg).join(" ")}`);
-  const result = spawnSync("claude", args, {
+  const result = await waitFor("claude", args, {
     cwd: worktree,
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -359,13 +488,18 @@ function hasVerifySkill(worktree) {
 
 // One headless pre-step: have a writing skill produce a missing spec file,
 // then commit it, so the loop starts from committed state as always.
-function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
+async function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
   const relative = path.join("spec", "features", slug, file);
   const target = path.join(worktree, relative);
   if (existsSync(target)) return;
   const skill = prompt.split(" ")[0];
-  session(prompt, `pre-step ${skill.slice(1)}`);
-  if (!existsSync(target)) {
+  const sessionId = await session(prompt, `pre-step ${skill.slice(1)}`, {
+    name: skill.slice(1),
+    task: `Write ${file}`,
+  });
+  const wrote = existsSync(target);
+  settleSession(sessionId, wrote ? "completed" : "failed", wrote ? undefined : `It did not write ${file}.`);
+  if (!wrote) {
     halt(
       "pre-step failed",
       `the ${skill} session did not write ${target}; write it by hand in the worktree, commit and push, then re-kick`,
@@ -376,7 +510,7 @@ function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
   log(`pre-step committed ${relative}`);
 }
 
-function main() {
+async function main() {
   const { repo, slug } = parseArgs(process.argv.slice(2));
   if (!gitOk(repo, ["rev-parse", "--git-dir"])) fail(`${repo} is not a git repository`);
 
@@ -384,6 +518,7 @@ function main() {
   const base = baseRef(repo, branch);
   const worktree = addWorktree(repo, slug, base);
   log(`worktree ${worktree} on slices/${slug}`);
+  startRun(repo, slug);
 
   const hasOrigin = gitOk(repo, ["remote", "get-url", "origin"]);
   // A human fix may have been pushed from outside the worktree; catch up when
@@ -415,13 +550,13 @@ function main() {
 
   ensureSettings(worktree, hasOrigin);
 
-  const session = (prompt, label) => runHarnessSession({ worktree, prompt, label });
+  const session = (prompt, label, member) => runHarnessSession({ worktree, prompt, label, ...member });
 
   const featureDir = path.join(worktree, "spec", "features", slug);
   if (!existsSync(path.join(featureDir, "spec.md")) && !existsSync(path.join(featureDir, "decisions.md"))) {
     fail(`spec/features/${slug}/decisions.md is missing; settle the decisions and commit them first`);
   }
-  runPreStep({
+  await runPreStep({
     worktree,
     slug,
     file: "spec.md",
@@ -429,7 +564,7 @@ function main() {
     session,
     hasOrigin,
   });
-  runPreStep({
+  await runPreStep({
     worktree,
     slug,
     file: "slices.json",
@@ -439,9 +574,12 @@ function main() {
   });
 
   const slices = readSlices(worktree, slug);
+  reportSteps(planSteps(slices, sliceStates(worktree, base, slices)));
 
   let iteration = 0;
   let closeRan = false;
+  let closeSession;
+  let lastSession;
   let failingSlice = null;
   for (;;) {
     if (hasOrigin) git(worktree, ["fetch", "origin", "--quiet"]);
@@ -450,10 +588,13 @@ function main() {
 
     if (allDone && closeRan) {
       const gap = closeGap({ worktree, base, slices, slug, hasOrigin });
+      settleSession(closeSession, gap ? "failed" : "completed", gap);
       if (gap) {
         halt("close incomplete", `the close session did not finish: ${gap}; fix it or re-kick`, worktree);
       }
       removeWorktree(repo, worktree);
+      board.outcome = "completed";
+      board.detail = undefined;
       notify("complete");
       log(`all ${slices.length} slices done, branch closed, worktree removed`);
       process.exit(0);
@@ -464,6 +605,7 @@ function main() {
           "awaiting sign-off",
           `waiting for human sign-off on ${[...states.pending].join(", ")} and nothing else is ready; sign off, then re-kick`,
           worktree,
+          { outcome: "waiting" },
         );
       }
       halt(
@@ -477,6 +619,7 @@ function main() {
         "iteration ceiling",
         `iteration ceiling: ${MAX_ITERATIONS} sessions in one kick; re-kick to continue`,
         worktree,
+        { detail: "re-kick to continue" },
       );
     }
 
@@ -486,23 +629,41 @@ function main() {
     const expected = states.ready
       .map((slice) => slice.id)
       .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))[0];
-    session(`/implement-slice spec/features/${slug}/`, `iteration ${iteration}`);
+    const title = slices.find((slice) => slice.id === expected)?.title ?? expected;
+    const retrying = failingSlice === expected;
+    if (!allDone) reportSteps(planSteps(slices, states, { running: expected }));
+    const sessionId = await session(`/implement-slice spec/features/${slug}/`, `iteration ${iteration}`, {
+      name: allDone ? "Close the branch" : retrying ? `${expected} retry` : expected,
+      task: allDone ? "Close the branch and mark the PR ready" : title,
+      parent: retrying ? lastSession : undefined,
+      stepId: allDone ? undefined : expected,
+    });
 
     if (allDone) {
+      closeSession = sessionId;
       closeRan = true;
       continue;
     }
     // Progress is a grown done or pending set, so a pending slice turning
     // done still counts even though the combined count stays constant.
     const after = sliceStates(worktree, base, slices);
-    if (after.done.size <= states.done.size && after.pending.size <= states.pending.size) {
-      if (failingSlice === expected) {
-        halt("no progress", `no progress: slice ${expected} failed twice in a row`, worktree);
+    const progressed = after.done.size > states.done.size || after.pending.size > states.pending.size;
+    settleSession(
+      sessionId,
+      progressed ? "completed" : "failed",
+      progressed ? undefined : `No commit marked ${expected} done or pending.`,
+    );
+    lastSession = sessionId;
+    if (!progressed) {
+      if (retrying) {
+        reportSteps(planSteps(slices, after, { failed: expected }));
+        halt("no progress", `no progress: slice ${expected} failed twice in a row`, worktree, { outcome: "failed" });
       }
       failingSlice = expected;
       log(`iteration ${iteration} added no trailer for ${expected}; retrying once`);
       continue;
     }
+    reportSteps(planSteps(slices, after));
     failingSlice = null;
   }
 }

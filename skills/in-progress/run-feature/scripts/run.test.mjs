@@ -3,13 +3,14 @@
 // Covers slices S1 through S6 of spec/features/run-feature/spec.md.
 
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -178,6 +179,135 @@ const MANY_SLICES = {
   })),
 };
 
+// Stands in for the agents-hq daemon on its real wire: JSON lines over a
+// WebSocket that offers the state dir's token as a subprotocol. It logs every
+// request, runs a launched session as one stub harness process, and then lists
+// the session as exited. A separate process, because the runner blocks in
+// spawnSync while the test holds this end.
+const FAKE_DAEMON = `
+const { execFileSync } = require("node:child_process");
+const { createHash } = require("node:crypto");
+const { appendFileSync } = require("node:fs");
+const { createServer } = require("node:http");
+const [logFile, token, contractVersion, failingTag, exitCode] = process.argv.slice(1);
+const sessions = [];
+const answer = (tag, payload) => {
+  if (tag === "ping") return { contractVersion: Number(contractVersion) };
+  if (tag === "runStart") return { runId: "run-1" };
+  if (tag === "sessionList") {
+    return sessions.map((sessionId) => ({ sessionId, state: { _tag: "Exited", exitCode: Number(exitCode) } }));
+  }
+  if (tag === "sessionLaunch") {
+    const sessionId = "session-" + (sessions.length + 1);
+    sessions.push(sessionId);
+    try {
+      execFileSync("claude", ["-p", payload.prompt], { cwd: payload.location.path, stdio: "ignore" });
+    } catch {}
+    return { sessionId };
+  }
+  return null;
+};
+const frame = (text) => {
+  const body = Buffer.from(text);
+  const head = body.length < 126 ? Buffer.from([0x81, body.length]) : Buffer.alloc(4);
+  if (body.length >= 126) {
+    head[0] = 0x81;
+    head[1] = 126;
+    head.writeUInt16BE(body.length, 2);
+  }
+  return Buffer.concat([head, body]);
+};
+const server = createServer();
+server.on("upgrade", (request, socket) => {
+  if (request.headers["sec-websocket-protocol"] !== token) return socket.destroy();
+  const accept = createHash("sha1")
+    .update(request.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+    .digest("base64");
+  socket.write(
+    "HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\n" +
+      "Sec-WebSocket-Accept: " + accept + "\\r\\nSec-WebSocket-Protocol: " + token + "\\r\\n\\r\\n",
+  );
+  socket.on("error", () => {});
+  let pending = Buffer.alloc(0);
+  socket.on("data", (chunk) => {
+    pending = Buffer.concat([pending, chunk]);
+    for (;;) {
+      if (pending.length < 2) return;
+      let length = pending[1] & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (pending.length < 4) return;
+        length = pending.readUInt16BE(2);
+        offset = 4;
+      }
+      if (pending.length < offset + 4 + length) return;
+      const mask = pending.subarray(offset, offset + 4);
+      const body = Buffer.from(pending.subarray(offset + 4, offset + 4 + length));
+      const opcode = pending[0] & 0x0f;
+      pending = pending.subarray(offset + 4 + length);
+      if (opcode === 8) return socket.destroy();
+      if (opcode !== 1) continue;
+      for (let i = 0; i < body.length; i++) body[i] ^= mask[i % 4];
+      const { id, tag, payload } = JSON.parse(body.toString().trim());
+      appendFileSync(logFile, JSON.stringify({ tag, payload }) + "\\n");
+      if (failingTag === "drop:" + tag) return socket.destroy();
+      const exit =
+        tag === failingTag
+          ? { _tag: "Failure", cause: { message: "refused" } }
+          : { _tag: "Success", value: answer(tag, payload) };
+      socket.write(frame(JSON.stringify({ _tag: "Exit", requestId: String(id), exit }) + "\\n"));
+    }
+  });
+});
+server.listen(0, "127.0.0.1", () => console.log(server.address().port));
+`;
+
+async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", exitCode = 0) {
+  const stateDir = path.join(fixture.tmp, "state");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(path.join(stateDir, "token"), "test-token\n");
+  const daemonLog = path.join(fixture.tmp, "daemon.log");
+  writeFileSync(daemonLog, "", { flag: "a" });
+  const claudeLog = path.join(fixture.tmp, "claude.log");
+  const daemon = spawn(
+    process.execPath,
+    ["-e", FAKE_DAEMON, daemonLog, "test-token", String(contractVersion), failingTag, String(exitCode)],
+    {
+      stdio: ["ignore", "pipe", "inherit"],
+      env: {
+        ...process.env,
+        PATH: `${fixture.bin}:${process.env.PATH}`,
+        STUB_CLAUDE_LOG: claudeLog,
+        STUB_GH_LOG: path.join(fixture.tmp, "gh.log"),
+      },
+    },
+  );
+  const port = await new Promise((resolve) => daemon.stdout.once("data", (data) => resolve(String(data).trim())));
+  return {
+    daemonEnv: { AGENTS_HQ_STATE_DIR: stateDir, AGENTS_HQ_PORT: port },
+    daemonLog,
+    stop: () => daemon.kill(),
+  };
+}
+
+// One kick against a fake daemon on the given contract, returning what the
+// runner sent it in order.
+async function runRunnerWithDaemon(fixture, contractVersion, failingTag, exitCode) {
+  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag, exitCode);
+  try {
+    const run = runRunner(fixture, daemonEnv);
+    const calls = readFileSync(daemonLog, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    return { ...run, calls };
+  } finally {
+    stop();
+  }
+}
+
+const callsTo = (calls, tag) => calls.filter((call) => call.tag === tag).map((call) => call.payload);
+
 function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   const {
     specFiles = true,
@@ -240,7 +370,7 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   return { tmp, repo, bin, worktree };
 }
 
-function runRunner(fixture) {
+function runRunner(fixture, env = {}) {
   const claudeLog = path.join(fixture.tmp, "claude.log");
   const ghLog = path.join(fixture.tmp, "gh.log");
   const osaLog = path.join(fixture.tmp, "osascript.log");
@@ -253,9 +383,12 @@ function runRunner(fixture) {
     env: {
       ...process.env,
       PATH: `${fixture.bin}:${process.env.PATH}`,
+      // No token here means no daemon, so a stub session never reaches a real one.
+      AGENTS_HQ_STATE_DIR: path.join(fixture.tmp, "no-daemon"),
       STUB_CLAUDE_LOG: claudeLog,
       STUB_GH_LOG: ghLog,
       STUB_OSA_LOG: osaLog,
+      ...env,
     },
   });
   return { result, claudeLog, ghLog, osaLog };
@@ -712,5 +845,293 @@ describe("run.mjs fires one end-state banner", () => {
     });
     assert.equal(result.status, 1, result.stderr);
     assert.deepEqual(bannerPayloads(osaLog), []);
+  });
+});
+
+describe("run.mjs puts the kick on the agents-hq board", () => {
+  it("runs each session through the daemon as a named member of one run", async () => {
+    const fixture = makeFixture();
+    const { result, calls, claudeLog } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(callsTo(calls, "runStart").length, 1);
+    assert.deepEqual(
+      callsTo(calls, "runAttach").map(({ name, task }) => [name, task]),
+      [
+        ["S1", "First slice"],
+        ["S2", "Second slice"],
+        ["Close the branch", "Close the branch and mark the PR ready"],
+      ],
+    );
+    assert.deepEqual(
+      callsTo(calls, "runSettle").map(({ outcome }) => outcome),
+      ["completed", "completed", "completed"],
+    );
+    assert.deepEqual(landedTrailers(fixture.repo), ["S1", "S2"]);
+    assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 3);
+  });
+
+  it("launches with full access and the headless note, and ends the run completed", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture());
+    const [launch] = callsTo(calls, "sessionLaunch");
+    assert.equal(launch.permissionMode, "full-access");
+    assert.match(launch.appendSystemPrompt, /no human can answer/);
+    assert.deepEqual(callsTo(calls, "runEnd"), [{ runId: "run-1", outcome: "completed" }]);
+  });
+
+  it("nests a retry under the attempt it follows, with the failed attempt settled", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB));
+    assert.equal(result.status, 2);
+    const [first, retry] = callsTo(calls, "runAttach");
+    assert.equal(first.name, "S1");
+    assert.equal(retry.name, "S1 retry");
+    assert.equal(retry.parentSessionId, first.sessionId);
+    assert.deepEqual(
+      callsTo(calls, "runSettle").map(({ outcome }) => outcome),
+      ["failed", "failed"],
+    );
+  });
+
+  it("keeps watching a launched session when the run refuses to attach it", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), 5, "runAttach");
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /runAttach failed/);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 3);
+    assert.equal(callsTo(calls, "sessionList").length, 3);
+  });
+
+  it("settles the close failed, with the reason, when it did not finish", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(CLOSE_STAYS_DRAFT_STUB));
+    const close = callsTo(calls, "runSettle").at(-1);
+    assert.equal(close.outcome, "failed");
+    assert.match(close.detail, /still a draft/);
+  });
+
+  it("falls back off the board, and says so, when no daemon can take the session", () => {
+    const fixture = makeFixture();
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /running off the board/);
+  });
+});
+
+describe("run.mjs reports the plan and the halts to the run progress card", () => {
+  const stateOf = (steps) => steps.map((step) => `${step.id} ${step.state}`).join(", ");
+  const planOf = (calls) => callsTo(calls, "runSteps").map(({ steps }) => stateOf(steps));
+
+  it("starts the run under a key of repo and slug, named with the slug", async () => {
+    const fixture = makeFixture();
+    const { calls } = await runRunnerWithDaemon(fixture);
+    const [start] = callsTo(calls, "runStart");
+    assert.equal(start.name, "demo");
+    assert.equal(start.key, `${realpathSync(fixture.repo)}:demo`);
+  });
+
+  it("sends the same key on a re-kick, so it reopens the run", async () => {
+    const fixture = makeFixture(CLAUDE_STUB, HITL_SLICES);
+    await runRunnerWithDaemon(fixture);
+    const { calls } = await runRunnerWithDaemon(fixture);
+    const keys = callsTo(calls, "runStart").map(({ key }) => key);
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0], keys[1]);
+  });
+
+  it("sends the whole plan with titles on every state change, before any session", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture());
+    assert.deepEqual(planOf(calls), [
+      "S1 pending, S2 pending",
+      "S1 running, S2 pending",
+      "S1 done, S2 pending",
+      "S1 done, S2 running",
+      "S1 done, S2 done",
+    ]);
+    const [first] = callsTo(calls, "runSteps");
+    assert.deepEqual(first.steps.map(({ title }) => title), ["First slice", "Second slice"]);
+    assert.equal(first.runId, "run-1");
+    assert.ok(
+      calls.findIndex(({ tag }) => tag === "runSteps") < calls.findIndex(({ tag }) => tag === "sessionLaunch"),
+    );
+  });
+
+  it("sends the plan a pre-step wrote, once it exists", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, SLICES, { specFiles: false }));
+    const firstSteps = calls.findIndex(({ tag }) => tag === "runSteps");
+    assert.deepEqual(
+      calls.slice(0, firstSteps).filter(({ tag }) => tag === "runAttach").map(({ payload }) => payload.name),
+      ["write-spec", "write-slices"],
+    );
+  });
+
+  it("links each slice session to its slice, and no other session to any", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, SLICES, { specFiles: false }));
+    assert.deepEqual(
+      callsTo(calls, "runAttach").map(({ name, stepId }) => [name, stepId]),
+      [
+        ["write-spec", undefined],
+        ["write-slices", undefined],
+        ["S1", "S1"],
+        ["S2", "S2"],
+        ["Close the branch", undefined],
+      ],
+    );
+  });
+
+  it("keeps a retry on its slice, running until it fails for good", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB));
+    assert.deepEqual(
+      callsTo(calls, "runAttach").map(({ name, stepId }) => [name, stepId]),
+      [
+        ["S1", "S1"],
+        ["S1 retry", "S1"],
+      ],
+    );
+    assert.deepEqual(planOf(calls), [
+      "S1 pending, S2 pending",
+      "S1 running, S2 pending",
+      "S1 failed, S2 pending",
+    ]);
+  });
+
+  it("a sign-off halt ends the run waiting, with the slice's step waiting too", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, HITL_SLICES));
+    assert.equal(result.status, 2);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "waiting");
+    assert.match(end.detail, /sign-off on S1/);
+    assert.equal(planOf(calls).at(-1), "S1 waiting, S2 pending");
+  });
+
+  it("the session ceiling ends the run stopped with re-kick to continue", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, MANY_SLICES));
+    assert.equal(result.status, 2);
+    assert.deepEqual(callsTo(calls, "runEnd"), [
+      { runId: "run-1", outcome: "stopped", detail: "re-kick to continue" },
+    ]);
+  });
+
+  it("a slice failing twice ends the run failed with the reason", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB));
+    assert.equal(result.status, 2);
+    assert.deepEqual(callsTo(calls, "runEnd"), [
+      { runId: "run-1", outcome: "failed", detail: "no progress: slice S1 failed twice in a row" },
+    ]);
+  });
+
+  it("a session ended on the board halts the kick instead of retrying it", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "", 143);
+    assert.equal(result.status, 2);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 1);
+    assert.deepEqual(callsTo(calls, "runSettle").map(({ outcome }) => outcome), ["stopped"]);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /session-1 was ended on the board/);
+    assert.equal(planOf(calls).at(-1), "S1 pending, S2 pending");
+  });
+
+  it("a session that ends on its own without progress still gets its retry", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "", 1);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 2);
+  });
+
+  it("a watcher that loses a session halts rather than start a second one beside it", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "sessionList");
+    assert.equal(result.status, 2);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 1);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /lost session-1/);
+    assert.equal(planOf(calls).at(-1), "S1 pending, S2 pending");
+  });
+
+  it("a connection that drops mid-watch counts as losing the session, not finishing it", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "drop:sessionRename");
+    assert.equal(result.status, 2);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 1);
+    assert.match(callsTo(calls, "runEnd")[0].detail, /lost session-1/);
+  });
+
+  it("nothing ready ends the run stopped with the reason", async () => {
+    const stuck = {
+      spec: SLICES.spec,
+      slices: [{ id: "S1", title: "Blocked for good", blocked_by: ["S9"], autonomy: "afk" }],
+    };
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(CLAUDE_STUB, stuck));
+    assert.equal(result.status, 2);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /nothing is ready/);
+  });
+
+  it("a close that did not finish ends the run stopped with the reason", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(CLOSE_STAYS_DRAFT_STUB));
+    assert.equal(result.status, 2);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /still a draft/);
+  });
+
+  it("a bad-input exit ends the run failed with the reason", async () => {
+    const fixture = makeFixture(CLAUDE_STUB, SLICES, { specFiles: false, decisionsFile: false });
+    const { result, calls } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 1);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "failed");
+    assert.match(end.detail, /decisions\.md is missing/);
+  });
+
+  it("an environment exit ends the run failed", async () => {
+    const fixture = makeFixture();
+    writeFileSync(path.join(fixture.bin, "claude"), "#!/bin/sh\nrm -f .git\n");
+    const { result, calls } = await runRunnerWithDaemon(fixture);
+    assert.notEqual(result.status, 0);
+    assert.equal(callsTo(calls, "runEnd")[0].outcome, "failed");
+  });
+
+  it("a halt before the first session still ends the run with its reason", async () => {
+    const fixture = makeFixture(CLAUDE_STUB, SLICES, { verifySkill: false });
+    const { result, calls } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 2);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "stopped");
+    assert.match(end.detail, /no verify skill/);
+  });
+
+  it("a signal mid-session stops the kick and ends the run stopped", async () => {
+    const fixture = makeFixture();
+    writeFileSync(path.join(fixture.bin, "claude"), "#!/bin/sh\nsleep 1\n");
+    const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture);
+    try {
+      const runner = spawn("node", [RUNNER, "demo"], {
+        cwd: fixture.repo,
+        stdio: "ignore",
+        env: { ...process.env, ...daemonEnv, PATH: `${fixture.bin}:${process.env.PATH}` },
+      });
+      const exited = new Promise((resolve) => runner.once("exit", resolve));
+      while (!readFileSync(daemonLog, "utf8").includes("sessionLaunch")) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      runner.kill("SIGTERM");
+      assert.equal(await exited, 2);
+      const end = readFileSync(daemonLog, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .find(({ tag }) => tag === "runEnd");
+      assert.deepEqual(end.payload, { runId: "run-1", outcome: "stopped", detail: "The run received SIGTERM." });
+    } finally {
+      stop();
+    }
+  });
+
+  it("a clean finish ends the run completed with no leftover reason", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture());
+    assert.deepEqual(callsTo(calls, "runEnd"), [{ runId: "run-1", outcome: "completed" }]);
+  });
+
+  it("a daemon on an older contract leaves the kick off the board, and says why", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), 4);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /contract 4/);
+    assert.deepEqual(callsTo(calls, "runStart"), []);
+    assert.match(result.stdout, /running off the board/);
   });
 });
