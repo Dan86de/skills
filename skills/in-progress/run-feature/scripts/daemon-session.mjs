@@ -7,6 +7,7 @@
 //        daemon-session.mjs run-end <run-id> <outcome> [detail]
 //        daemon-session.mjs session <cwd> <prompt> <system-prompt-note> <name> <task> <result-file> [run-id] [parent-session-id] [step-id]
 // A session writes its id to <result-file>, then the run shows it live.
+// run-start names the session it was kicked from, AGENTS_HQ_SESSION_ID, as the run's launcher.
 // Exit codes: 0 done, 1 lost mid-run, 3 no daemon that can run it was found and
 // nothing was launched, so the caller should run it another way, 4 ended by
 // someone else through the daemon, usually a person on the board.
@@ -163,7 +164,8 @@ async function main() {
   if (command === "session") return runSession(args);
   if (command === "run-start") {
     const [name, task, key] = args;
-    return runCall("runStart", { name, task, key }, (run) => run.runId);
+    const launcherSessionId = process.env.AGENTS_HQ_SESSION_ID;
+    return runCall("runStart", { name, task, key, ...(launcherSessionId ? { launcherSessionId } : {}) }, (run) => run.runId);
   }
   if (command === "run-steps") {
     const [runId, steps] = args;

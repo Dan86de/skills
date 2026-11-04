@@ -292,10 +292,10 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", ex
 
 // One kick against a fake daemon on the given contract, returning what the
 // runner sent it in order.
-async function runRunnerWithDaemon(fixture, contractVersion, failingTag, exitCode) {
+async function runRunnerWithDaemon(fixture, { contractVersion, failingTag, exitCode, env } = {}) {
   const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag, exitCode);
   try {
-    const run = runRunner(fixture, daemonEnv);
+    const run = runRunner(fixture, { ...daemonEnv, ...env });
     const calls = readFileSync(daemonLog, "utf8")
       .split("\n")
       .filter(Boolean)
@@ -385,6 +385,8 @@ function runRunner(fixture, env = {}) {
       PATH: `${fixture.bin}:${process.env.PATH}`,
       // No token here means no daemon, so a stub session never reaches a real one.
       AGENTS_HQ_STATE_DIR: path.join(fixture.tmp, "no-daemon"),
+      // The tests may themselves run inside a daemon session.
+      AGENTS_HQ_SESSION_ID: undefined,
       STUB_CLAUDE_LOG: claudeLog,
       STUB_GH_LOG: ghLog,
       STUB_OSA_LOG: osaLog,
@@ -892,7 +894,7 @@ describe("run.mjs puts the kick on the agents-hq board", () => {
   });
 
   it("keeps watching a launched session when the run refuses to attach it", async () => {
-    const { result, calls } = await runRunnerWithDaemon(makeFixture(), 5, "runAttach");
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), { failingTag: "runAttach" });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /runAttach failed/);
     assert.equal(callsTo(calls, "sessionLaunch").length, 3);
@@ -924,6 +926,20 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     const [start] = callsTo(calls, "runStart");
     assert.equal(start.name, "demo");
     assert.equal(start.key, `${realpathSync(fixture.repo)}:demo`);
+  });
+
+  it("names the session it was kicked from as the run's launcher", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture(), {
+      env: { AGENTS_HQ_SESSION_ID: "launcher-1" },
+    });
+    const [start] = callsTo(calls, "runStart");
+    assert.equal(start.launcherSessionId, "launcher-1");
+  });
+
+  it("names no launcher when kicked from outside any session", async () => {
+    const { calls } = await runRunnerWithDaemon(makeFixture());
+    const [start] = callsTo(calls, "runStart");
+    assert.equal("launcherSessionId" in start, false);
   });
 
   it("sends the same key on a re-kick, so it reopens the run", async () => {
@@ -1017,7 +1033,7 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
   });
 
   it("a session ended on the board halts the kick instead of retrying it", async () => {
-    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "", 143);
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), { exitCode: 143 });
     assert.equal(result.status, 2);
     assert.equal(callsTo(calls, "sessionLaunch").length, 1);
     assert.deepEqual(callsTo(calls, "runSettle").map(({ outcome }) => outcome), ["stopped"]);
@@ -1028,12 +1044,12 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
   });
 
   it("a session that ends on its own without progress still gets its retry", async () => {
-    const { calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "", 1);
+    const { calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), { exitCode: 1 });
     assert.equal(callsTo(calls, "sessionLaunch").length, 2);
   });
 
   it("a watcher that loses a session halts rather than start a second one beside it", async () => {
-    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "sessionList");
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), { failingTag: "sessionList" });
     assert.equal(result.status, 2);
     assert.equal(callsTo(calls, "sessionLaunch").length, 1);
     const [end] = callsTo(calls, "runEnd");
@@ -1043,7 +1059,7 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
   });
 
   it("a connection that drops mid-watch counts as losing the session, not finishing it", async () => {
-    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), 5, "drop:sessionRename");
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), { failingTag: "drop:sessionRename" });
     assert.equal(result.status, 2);
     assert.equal(callsTo(calls, "sessionLaunch").length, 1);
     assert.match(callsTo(calls, "runEnd")[0].detail, /lost session-1/);
@@ -1103,7 +1119,7 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
       const runner = spawn("node", [RUNNER, "demo"], {
         cwd: fixture.repo,
         stdio: "ignore",
-        env: { ...process.env, ...daemonEnv, PATH: `${fixture.bin}:${process.env.PATH}` },
+        env: { ...process.env, ...daemonEnv, AGENTS_HQ_SESSION_ID: undefined, PATH: `${fixture.bin}:${process.env.PATH}` },
       });
       const exited = new Promise((resolve) => runner.once("exit", resolve));
       while (!readFileSync(daemonLog, "utf8").includes("sessionLaunch")) {
@@ -1128,7 +1144,7 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
   });
 
   it("a daemon on an older contract leaves the kick off the board, and says why", async () => {
-    const { result, calls } = await runRunnerWithDaemon(makeFixture(), 4);
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), { contractVersion: 4 });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /contract 4/);
     assert.deepEqual(callsTo(calls, "runStart"), []);
