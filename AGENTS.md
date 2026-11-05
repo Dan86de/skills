@@ -57,6 +57,15 @@ The package manager is pnpm.
 `pnpm-lock.yaml` is committed, and CI installs with `--frozen-lockfile`.
 The `npx skills@latest` commands in the install block stay as `npx`: those are for consumers, who will not have this repo's pnpm pin.
 
+## Checks
+
+`pnpm install` points git at `.githooks/`.
+The `pre-commit` hook checks the plugin version and runs `claude plugin validate . --strict`, and the `pre-push` hook runs `pnpm test`, which takes about 150 seconds.
+CI runs all three on every PR and on `main`.
+A hook can be skipped with `--no-verify`, so CI is the record of whether a change passes.
+A red check does not block a merge unless branch protection requires it.
+The hooks stay off in CI, where `prepare` leaves them unset.
+
 ## Commits
 
 Never add a `Co-Authored-By` line or any other agent attribution to commit messages or PR descriptions.

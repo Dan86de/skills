@@ -1,0 +1,10 @@
+#!/bin/sh
+unset $(git rev-parse --local-env-vars)
+
+node scripts/sync-plugin-version.mjs --check || exit 1
+
+if command -v claude >/dev/null 2>&1; then
+  claude plugin validate . --strict
+else
+  echo "pre-commit: claude is not on PATH, leaving the plugin validation to CI." >&2
+fi
