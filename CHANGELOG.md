@@ -1,5 +1,20 @@
 # dan86de-skills
 
+## 0.15.0
+
+### Minor Changes
+
+- [#34](https://github.com/Dan86de/skills/pull/34) [`7116f21`](https://github.com/Dan86de/skills/commit/7116f2109f5cd63d30a47585571dac14ea096da9) Thanks [@Dan86de](https://github.com/Dan86de)! - Bring `run-feature` back onto the agents-hq board.
+  Each session runs through the local daemon when one can take it, named, stoppable and grouped into a run with its outcome and retries, and falls back to `claude -p` off the board otherwise.
+
+- [#34](https://github.com/Dan86de/skills/pull/34) [`7116f21`](https://github.com/Dan86de/skills/commit/7116f2109f5cd63d30a47585571dac14ea096da9) Thanks [@Dan86de](https://github.com/Dan86de)! - Report a feature's progress from `run-feature` to the agents-hq run progress card.
+  Each kick reopens the feature's run by key, sends the whole plan on every state change, links each slice session to its slice, and ends the run with an outcome that says whether it needs you, stopped or failed.
+  It now needs a daemon on contract 5 to run on the board.
+
+### Patch Changes
+
+- [`91b5e5f`](https://github.com/Dan86de/skills/commit/91b5e5feefe3b5cd470d68ab399119bfc3578204) Thanks [@Dan86de](https://github.com/Dan86de)! - `run-feature` names the agents-hq session it was kicked from as the run's launcher, so the run's card shows where it started.
+
 ## 0.14.0
 
 ### Minor Changes
