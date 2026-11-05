@@ -14,7 +14,7 @@
     "check-plugin-version": "node scripts/sync-plugin-version.mjs --check",
     "link": "./scripts/link-skills.sh",
     "list": "./scripts/list-skills.sh",
-    "prepare": "git config core.hooksPath .githooks",
+    "prepare": "[ -n \"$CI\" ] || git config core.hooksPath .githooks",
     "test": "node --test skills/"
   },
   "devDependencies": {
