@@ -20,6 +20,8 @@ Arguments: the spec's path, then an optional fixed point.
 
 2. **Collect the inputs**: the spec, the changed files from `git diff --name-only <fixed-point> HEAD`, the agent instruction files at the root, and the project's verify skill and its feature map if it has them.
    The verify skill is `.agents/skills/verify/`, else a `verify` skill in a harness skills folder; the feature map is `docs/manual/`.
+   Also collect the **recorded deviations**: every `Deviations:` item in `git log --format=%B <fixed-point>..HEAD`, skipping `- none`.
+   They are input, not findings: each already says what the branch does instead and why.
 
 3. **Make the spec prover's worktree** at `HEAD`, detached, under the run's own folder:
 
@@ -34,6 +36,8 @@ Arguments: the spec's path, then an optional fixed point.
    If your harness has no subagents, stop and tell the user to run this skill in a fresh session: the context that wrote the branch will agree with it.
 
 5. **Check the block it returns**: it matches the brief's template, it has exactly one line per Behaviour entry of the spec, every `passing` line names a test or driver the prover ran, and every `missing` or `looks wrong` line names a proof file in the prover's worktree and the command that fails.
+   Every `not asked for` line names diff lines and a spec line, and no proof or command.
+   No line reports a departure a recorded deviation already names.
    On a miss, send it back once naming what failed; if it still fails, return it with a `Shape:` line after the block.
 
 ## Report

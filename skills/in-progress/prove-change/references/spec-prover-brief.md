@@ -16,6 +16,12 @@ Changed files:
 <changed-files>
 ```
 
+**Recorded deviations**, which the branch's commits list under `Deviations:`:
+
+```text
+<deviations, or "none">
+```
+
 **Agent instructions**: `<agent-instruction-paths, or "none">`.
 **Verify skill**: `<verify-skill-path, or "none">`, with its feature map at `<feature-map-path, or "none">`.
 
@@ -37,7 +43,11 @@ An entry is `passing` only on something you ran and saw pass: an existing test o
 Reading suggests where to look; it never settles an entry.
 Look hardest at what a user can reach that no existing test or driver drives.
 
+A departure a recorded deviation names is not a finding, even when you disagree with it: leave it out of every section, and judge the entry on the rest of what it asks.
+A deviation covers only what it says the branch does instead; a further gap in the same entry is still yours to prove.
+
 Also note anything the diff does that no Behaviour entry or Decision asks for, as `not asked for`.
+It needs no run: name the diff lines that do it and the spec line it goes beyond, which is the entry or Decision nearest to it, or the Out of scope line it crosses.
 
 ## Prove it
 
@@ -68,7 +78,7 @@ Behaviours:
 - 3 looks wrong - <what the spec says, and what the branch does> - proof: <path from the worktree root> - `<command>` - <first failing line>
 
 Not asked for:
-- <file:line> - <what the diff does that nothing asks for>
+- <what the diff does that nothing asks for> - diff: <file:line or file:start-end at HEAD, comma-separated> - spec: <spec-path>:<line>, <what that line says>
 
 Dropped:
 - <behaviour number> - <the suspicion> - <why no proof held>
