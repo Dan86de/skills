@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Runs one headless session through the local agents-hq daemon, so it shows on
-// the board, and returns once its turn is over and the session is ended.
+// Runs one headless session through the local agents-hq daemon, so it shows in
+// agents-hq, and returns once its turn is over and the session is ended.
 // Usage: daemon-session.mjs run-start <name> <task> <key>      prints the run id, or nothing
 //        daemon-session.mjs run-steps <run-id> <steps-json>
 //        daemon-session.mjs run-settle <run-id> <session-id> <outcome> [detail]
@@ -10,7 +10,7 @@
 // run-start names the session it was kicked from, AGENTS_HQ_SESSION_ID, as the run's launcher.
 // Exit codes: 0 done, 1 lost mid-run, 3 no daemon that can run it was found and
 // nothing was launched, so the caller should run it another way, 4 ended by
-// someone else through the daemon, usually a person on the board.
+// someone else through the daemon, usually a person in agents-hq.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -106,8 +106,8 @@ async function runSession(args) {
     appendSystemPrompt: note,
   });
   writeFileSync(resultFile, sessionId);
-  // The board's labels are decoration: losing one must not lose the watch, or the
-  // loop would start a second session in the same worktree beside this live one.
+  // The session's label and run are decoration: losing one must not lose the watch, or the
+  // run would start a second session in the same worktree beside this live one.
   const decorate = (tag, payload) =>
     client.call(tag, payload).catch((error) => log(`${tag} failed: ${error.message}`));
   await decorate("sessionRename", { sessionId, label: name });
@@ -121,7 +121,7 @@ async function runSession(args) {
       ...(stepId ? { stepId } : {}),
     });
   }
-  log(`session ${sessionId} on the board as "${name}"`);
+  log(`session ${sessionId} in agents-hq as "${name}"`);
 
   const settled = settleWatch();
   let waitingOnUser = false;

@@ -938,7 +938,7 @@ describe("run.mjs fires one end-state banner", () => {
   });
 });
 
-describe("run.mjs puts the kick on the agents-hq board", () => {
+describe("run.mjs puts the kick on the agents-hq Runs page", () => {
   it("runs each session through the daemon as a named member of one run", async () => {
     const fixture = makeFixture();
     const { result, calls, claudeLog } = await runRunnerWithDaemon(fixture);
@@ -996,11 +996,11 @@ describe("run.mjs puts the kick on the agents-hq board", () => {
     assert.match(close.detail, /still a draft/);
   });
 
-  it("falls back off the board, and says so, when no daemon can take the session", () => {
+  it("falls back outside agents-hq, and says so, when no daemon can take the session", () => {
     const fixture = makeFixture();
     const { result } = runRunner(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /running off the board/);
+    assert.match(result.stdout, /running outside agents-hq/);
   });
 });
 
@@ -1120,14 +1120,14 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     ]);
   });
 
-  it("a session ended on the board halts the kick instead of retrying it", async () => {
+  it("a session ended in agents-hq halts the kick instead of retrying it", async () => {
     const { result, calls } = await runRunnerWithDaemon(makeFixture(IDLE_STUB), { exitCode: 143 });
     assert.equal(result.status, 2);
     assert.equal(callsTo(calls, "sessionLaunch").length, 1);
     assert.deepEqual(callsTo(calls, "runSettle").map(({ outcome }) => outcome), ["stopped"]);
     const [end] = callsTo(calls, "runEnd");
     assert.equal(end.outcome, "stopped");
-    assert.match(end.detail, /session-1 was ended on the board/);
+    assert.match(end.detail, /session-1 was ended in agents-hq/);
     assert.equal(planOf(calls).at(-1), "S1 pending, S2 pending");
   });
 
@@ -1231,12 +1231,12 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     assert.deepEqual(callsTo(calls, "runEnd"), [{ runId: "run-1", outcome: "completed" }]);
   });
 
-  it("a daemon on an older contract leaves the kick off the board, and says why", async () => {
+  it("a daemon on an older contract leaves the kick outside agents-hq, and says why", async () => {
     const { result, calls } = await runRunnerWithDaemon(makeFixture(), { contractVersion: 4 });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /contract 4/);
     assert.deepEqual(callsTo(calls, "runStart"), []);
-    assert.match(result.stdout, /running off the board/);
+    assert.match(result.stdout, /running outside agents-hq/);
   });
 });
 
