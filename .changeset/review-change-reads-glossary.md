@@ -2,4 +2,4 @@
 "dan86de-skills": patch
 ---
 
-`review-change` reads the project's glossary, `spec/glossary.md`, and judges a drifted term against the names it settles.
+`review-change` hands its reviewer the project's glossary, `spec/glossary.md`, so it judges a drifted term against the names it settles.

@@ -17,6 +17,7 @@ Changed files:
 
 **Standards**, highest precedence first: `<standards-paths, or "none">`.
 **Agent instructions**, for coding rules only: `<agent-instruction-paths, or "none">`.
+**Glossary**, the names a **Drifted term** is judged against: `<glossary-path, or "none">`.
 **Baseline**: `<skill-dir>/references/baseline.md`.
 The repo's rules beat it wherever they disagree.
 **Checkers**: `<checker-config-paths>`.
