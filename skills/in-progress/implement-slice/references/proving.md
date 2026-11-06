@@ -28,7 +28,7 @@ Revert the failed causes, and keep the proof as handed over except for one edit 
 A driver needs no mark, as CI never runs one.
 Its finding's line in the `Proved:` block ends ` => stands: known failure, proof <proof path>, tried <each cause, separated by "; ">`, and the commit gets one `Known-Failure: <spec 3, Q2 or attack 1>` trailer for it.
 The close then leaves the PR a draft for a person.
-A later close takes each known failure as a kept finding again: when its proof passes, remove the mark, and the new `Address review` carries no `Known-Failure` trailer for it.
+A later close finds each known failure by the `Known-Failure:` trailers and `stands: known failure` lines of earlier `Address review` commits, which give its proof path, and takes it as a kept finding again: when its proof passes, remove the mark, and the new `Address review` carries no `Known-Failure` trailer for it.
 
 ## The Proved block
 

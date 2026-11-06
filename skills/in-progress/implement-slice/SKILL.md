@@ -93,7 +93,7 @@ Progress lives only in git: a slice is done when its commit is on the branch.
 
 ## Report
 
-The slice and its state, the commit and PR, the verify run, the review's `Open` lines not marked `fixed`, any deviations, the PR's attention level and number of manual checks after step 9, and what is ready next.
+The slice and its state, the commit and PR, the verify run, the review's `Open` lines not marked `fixed`, any deviations, the PR's attention level, number of manual checks and any known failure left in a draft after step 9, and what is ready next.
 
 ## Guardrails
 
