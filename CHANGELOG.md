@@ -1,5 +1,11 @@
 # dan86de-skills
 
+## 0.16.1
+
+### Patch Changes
+
+- [#44](https://github.com/Dan86de/skills/pull/44) [`972a1c7`](https://github.com/Dan86de/skills/commit/972a1c79ca472540e7237454a29ba4f772215f36) Thanks [@Dan86de](https://github.com/Dan86de)! - `review-change` hands its reviewer the project's glossary, `spec/glossary.md`, so it judges a drifted term against the names it settles.
+
 ## 0.16.0
 
 ### Minor Changes
