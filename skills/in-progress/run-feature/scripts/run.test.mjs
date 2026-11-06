@@ -111,6 +111,24 @@ const { appendFileSync } = require("node:fs");
 appendFileSync(process.env.STUB_OSA_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
 `;
 
+// A pnpm that records each call and installs by creating node_modules,
+// unless told to fail.
+const PNPM_STUB = `#!/usr/bin/env node
+const { appendFileSync, mkdirSync } = require("node:fs");
+appendFileSync(process.env.STUB_PNPM_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+if (process.env.STUB_PNPM_FAIL) process.exit(1);
+mkdirSync("node_modules", { recursive: true });
+`;
+
+// The agents-hq pre-commit hook's guard: no commit from a checkout without
+// node_modules.
+const PRE_COMMIT_HOOK = `#!/bin/sh
+if [ ! -d node_modules ]; then
+  echo "pre-commit: no node_modules in this checkout. Run pnpm install, then commit again." >&2
+  exit 1
+fi
+`;
+
 // A session whose write-spec pre-step produces nothing, for the
 // "pre-step failed" halt and its banner.
 const PRESTEP_FAIL_STUB = CLAUDE_STUB.replace(
@@ -315,6 +333,7 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
     decisionsFile = true,
     settingsFile = true,
     origin = true,
+    pnpmProject = false,
   } = opts;
   const tmp = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
   const repo = path.join(tmp, "repo");
@@ -350,8 +369,19 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
       JSON.stringify({ permissions: { allow: ["Bash(pnpm test:*)", "Bash(git push:*)"] } }),
     );
   }
+  if (pnpmProject) {
+    writeFileSync(path.join(repo, "package.json"), JSON.stringify({ name: "demo", private: true }));
+    writeFileSync(path.join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    writeFileSync(path.join(repo, ".gitignore"), "node_modules\n");
+  }
   git(repo, "add", "-A");
   git(repo, "commit", "--quiet", "-m", "spec and slices");
+  if (pnpmProject) {
+    // Installed after the fixture's own commit, like a project whose hooks
+    // only a pnpm install wires up; worktrees share it through the common dir.
+    writeFileSync(path.join(repo, ".git", "hooks", "pre-commit"), PRE_COMMIT_HOOK);
+    chmodSync(path.join(repo, ".git", "hooks", "pre-commit"), 0o755);
+  }
   if (origin) {
     git(repo, "push", "--quiet", "-u", "origin", "main");
     git(repo, "remote", "set-head", "origin", "main");
@@ -362,6 +392,8 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   writeFileSync(path.join(bin, "claude"), claudeStub);
   writeFileSync(path.join(bin, "gh"), GH_STUB);
   writeFileSync(path.join(bin, "osascript"), OSASCRIPT_STUB);
+  writeFileSync(path.join(bin, "pnpm"), PNPM_STUB);
+  chmodSync(path.join(bin, "pnpm"), 0o755);
   chmodSync(path.join(bin, "claude"), 0o755);
   chmodSync(path.join(bin, "gh"), 0o755);
   chmodSync(path.join(bin, "osascript"), 0o755);
@@ -374,6 +406,8 @@ function runRunner(fixture, env = {}) {
   const claudeLog = path.join(fixture.tmp, "claude.log");
   const ghLog = path.join(fixture.tmp, "gh.log");
   const osaLog = path.join(fixture.tmp, "osascript.log");
+  const pnpmLog = path.join(fixture.tmp, "pnpm.log");
+  writeFileSync(pnpmLog, "");
   writeFileSync(claudeLog, "");
   writeFileSync(ghLog, "");
   writeFileSync(osaLog, "");
@@ -390,10 +424,11 @@ function runRunner(fixture, env = {}) {
       STUB_CLAUDE_LOG: claudeLog,
       STUB_GH_LOG: ghLog,
       STUB_OSA_LOG: osaLog,
+      STUB_PNPM_LOG: pnpmLog,
       ...env,
     },
   });
-  return { result, claudeLog, ghLog, osaLog };
+  return { result, claudeLog, ghLog, osaLog, pnpmLog };
 }
 
 // The Slice trailers landed on origin's slices branch, sorted.
@@ -1149,5 +1184,62 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     assert.match(result.stderr, /contract 4/);
     assert.deepEqual(callsTo(calls, "runStart"), []);
     assert.match(result.stdout, /running off the board/);
+  });
+});
+
+describe("run.mjs installs the worktree's dependencies before any session", () => {
+  it("a pnpm project gets one frozen install, so a hook needing node_modules lets the pre-steps commit", () => {
+    const fixture = makeFixture(CLAUDE_STUB, SLICES, { specFiles: false, pnpmProject: true });
+    const { result, pnpmLog } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(pnpmLog, "utf8").split("\n").filter(Boolean), [
+      JSON.stringify(["install", "--frozen-lockfile"]),
+    ]);
+    assert.deepEqual(landedTrailers(fixture.repo), ["S1", "S2"]);
+  });
+
+  it("a project without a lockfile is never installed", () => {
+    const fixture = makeFixture();
+    const { result, pnpmLog } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(pnpmLog, "utf8"), "");
+  });
+
+  it("a failed install halts as install failed, keeps the worktree, and starts no session", () => {
+    const fixture = makeFixture(CLAUDE_STUB, SLICES, { specFiles: false, pnpmProject: true });
+    const { result, claudeLog, osaLog } = runRunner(fixture, { STUB_PNPM_FAIL: "1" });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /halt: pnpm install --frozen-lockfile failed for pnpm-lock\.yaml/);
+    assert.deepEqual(bannerPayloads(osaLog), ["install failed"]);
+    assert.equal(readFileSync(claudeLog, "utf8"), "");
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+  });
+
+  it("a hook refusing a pre-step commit halts readably with the hook's reason, not a stack trace", () => {
+    const fixture = makeFixture(CLAUDE_STUB, SLICES, { specFiles: false, pnpmProject: true });
+    // node_modules exists but install is skipped: the hook still refuses.
+    writeFileSync(
+      path.join(fixture.repo, ".git", "hooks", "pre-commit"),
+      '#!/bin/sh\necho "pre-commit: lint failed" >&2\nexit 1\n',
+    );
+    const { result, osaLog } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(
+      result.stderr,
+      /halt: git refused committing spec\/features\/demo\/spec\.md: pre-commit: lint failed; fix it in the worktree, then re-kick/,
+    );
+    assert.doesNotMatch(result.stderr, /at .*run\.mjs:\d+/);
+    assert.deepEqual(bannerPayloads(osaLog), ["commit refused"]);
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+  });
+
+  it("a kept worktree missing node_modules is installed on resume", () => {
+    const fixture = makeFixture(CLAUDE_STUB, SLICES, { specFiles: false, pnpmProject: true });
+    const first = runRunner(fixture, { STUB_PNPM_FAIL: "1" });
+    assert.equal(first.result.status, 2, first.result.stderr);
+    const second = runRunner(fixture);
+    assert.equal(second.result.status, 0, second.result.stderr);
+    assert.match(second.result.stdout, /resuming in existing worktree/);
+    assert.equal(readFileSync(second.pnpmLog, "utf8").split("\n").filter(Boolean).length, 1);
   });
 });
