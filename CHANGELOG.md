@@ -1,5 +1,12 @@
 # dan86de-skills
 
+## 0.15.1
+
+### Patch Changes
+
+- [#40](https://github.com/Dan86de/skills/pull/40) [`6aff169`](https://github.com/Dan86de/skills/commit/6aff169533442555c8269865a2b775d33fe7c8d8) Thanks [@Dan86de](https://github.com/Dan86de)! - `run-feature` installs a fresh worktree's dependencies before any session, so a project whose pre-commit hook needs `node_modules` no longer crashes the kick on the first spec commit.
+  A hook or remote refusing a commit the script makes itself now halts readably, and any unforeseen error exits 1 with one line instead of a stack trace.
+
 ## 0.15.0
 
 ### Minor Changes
