@@ -1,3 +1,3 @@
 interface:
   display_name: "Prove Change"
-  short_description: "Check a branch against its spec with failing tests"
+  short_description: "Prove spec gaps and bugs on a branch with failing tests"
