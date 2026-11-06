@@ -1,5 +1,23 @@
 # dan86de-skills
 
+## 0.16.0
+
+### Minor Changes
+
+- [#42](https://github.com/Dan86de/skills/pull/42) [`fd7568c`](https://github.com/Dan86de/skills/commit/fd7568c1e4b6cc370e077a81137155ace67a808a) Thanks [@Dan86de](https://github.com/Dan86de)! - `implement-slice` commits a proven bug its branch close cannot fix within three different causes as a known failure, rather than stopping: the proof stays, a test gets only its runner's expected-failure mark naming the finding so CI stays green, and the `Address review` commit carries a `Known-Failure:` trailer.
+  The PR stays a draft with the bug first under **Needs you**, `pr-brief` raises it to `read`, and `run-feature` ends the run `waiting` with a `known failure` halt.
+
+- [#42](https://github.com/Dan86de/skills/pull/42) [`fd7568c`](https://github.com/Dan86de/skills/commit/fd7568c1e4b6cc370e077a81137155ace67a808a) Thanks [@Dan86de](https://github.com/Dan86de)! - `implement-slice` closes a branch with `prove-change` instead of checking the branch against the spec itself.
+  The close fixes the code until every proof `prove-change` handed over passes, short of a known failure, never edits one, deletes one only with a recorded reason, and commits a `Proved:` block that settles every `possible bug:` question as fixed, standing or dropped.
+  The PR's `## Branch review` lists every dropped finding with its reason in a fold of its own, so a reader can see whether the provers drop too much.
+
+- [#42](https://github.com/Dan86de/skills/pull/42) [`fd7568c`](https://github.com/Dan86de/skills/commit/fd7568c1e4b6cc370e077a81137155ace67a808a) Thanks [@Dan86de](https://github.com/Dan86de)! - Add `prove-change`, which checks a branch against its spec from a context that did not write it.
+  A spec prover walks every Behaviour entry in its own worktree at the branch `HEAD`, and keeps a `missing` or `looks wrong` finding only with a test or driver it wrote that fails there.
+  It skips what the branch's commits already record under `Deviations:`, and reports scope nothing asks for with its diff lines and spec line, and no run.
+  A bug prover runs beside it in a second worktree, settles every unmarked `possible bug:` question from the branch's reviews as proven or dropped, and attacks the diff for bugs no question named.
+  The skill then reruns every proof twice at `HEAD`, drops any that passes or fails on setup or for another reason with a one-line reason, and copies the surviving tests and drivers into the caller's working tree.
+  Every proof must also pass the project's typecheck and lint, with a prover sent back once when one fails, since a proof gets committed unedited, and the bug prover gets the recorded deviations so it does not report them as bugs.
+
 ## 0.15.1
 
 ### Patch Changes
