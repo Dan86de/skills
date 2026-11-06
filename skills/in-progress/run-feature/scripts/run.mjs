@@ -70,7 +70,7 @@ function fail(message) {
   process.exit(1);
 }
 
-// A halt reads Stopped on the board unless it says otherwise: only a person
+// A halt reads Stopped on the Runs page unless it says otherwise: only a person
 // being needed and a double failure read as anything else.
 function halt(state, message, worktree, { outcome = "stopped", detail = message } = {}) {
   board.outcome = outcome;
@@ -391,7 +391,7 @@ function quoteArg(arg) {
 // asking a question (write-slices did, on granularity) stalls a headless run,
 // so each session is told to settle open choices itself.
 const HEADLESS_NOTE =
-  "This session runs headlessly inside the run-feature loop: no human can answer mid-run. " +
+  "This session runs headlessly inside a run-feature run: no human can answer mid-run. " +
   "Never end the turn asking a question or waiting for input; " +
   "settle every open choice with the default you would otherwise propose, note it, and finish the task.";
 
@@ -400,7 +400,7 @@ const DAEMON_LOST = 1;
 const DAEMON_UNAVAILABLE = 3;
 const DAEMON_ENDED_BY_SOMEONE_ELSE = 4;
 
-// What the board knows of this kick: the run it shows and the end state recorded
+// What the Runs page knows of this kick: the run it shows and the end state recorded
 // when the process exits.
 const board = { runId: "", outcome: "failed", detail: undefined, lastSteps: "" };
 
@@ -468,8 +468,8 @@ function settleSession(sessionId, outcome, detail) {
   daemonCall("run-settle", board.runId, sessionId, outcome, detail ?? "");
 }
 
-// Through the local agents-hq daemon when one can take it, so it shows on the board and
-// can be stopped there; otherwise directly, off the board, with no session id to return.
+// Through the local agents-hq daemon when one can take it, so it shows on the Runs page and
+// can be stopped there; otherwise directly, outside agents-hq, with no session id to return.
 async function runHarnessSession({ worktree, prompt, label, name, task, parent, stepId }) {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
   const resultFile = path.join(scratch, "session-id");
@@ -497,12 +497,12 @@ async function runHarnessSession({ worktree, prompt, label, name, task, parent, 
   if (viaDaemon.status === DAEMON_LOST) {
     halt(
       "session lost",
-      `lost ${sessionId ?? "a session being launched"} on the daemon, so it may still be working in the worktree; check the board, then re-kick`,
+      `lost ${sessionId ?? "a session being launched"} on the daemon, so it may still be working in the worktree; check the Runs page, then re-kick`,
       worktree,
     );
   }
   if (viaDaemon.status === DAEMON_ENDED_BY_SOMEONE_ELSE) {
-    const reason = `${sessionId} was ended on the board; re-kick to continue`;
+    const reason = `${sessionId} was ended in agents-hq; re-kick to continue`;
     settleSession(sessionId, "stopped", reason);
     halt("session ended", reason, worktree);
   }
@@ -510,7 +510,7 @@ async function runHarnessSession({ worktree, prompt, label, name, task, parent, 
     log(`${label}: daemon session ended with exit code ${viaDaemon.status}`);
     return sessionId;
   }
-  log(`${label}: running off the board, as no agents-hq daemon can take it`);
+  log(`${label}: running outside agents-hq, as no agents-hq daemon can take it`);
   await runClaudeSession({ worktree, prompt, label });
   return undefined;
 }
