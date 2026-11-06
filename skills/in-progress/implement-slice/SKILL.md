@@ -32,7 +32,7 @@ Progress lives only in git: a slice is done when its commit is on the branch.
    With `--signoff <id>`, follow [references/signoff.md](references/signoff.md) instead.
    With `--rework <id> "<what failed>"`, follow [references/rework.md](references/rework.md) instead.
    Refuse a named slice that is done, or blocked (name the blocker); take it if it is ready or pending (rework).
-   With none named, take the lowest ready id.
+   With none named, take the lowest ready `afk` id, or the lowest ready id when none is `afk`, so a slice that needs a person waits until the unattended work is done.
    If every slice is done and the PR is still a draft, go to step 9; if nothing is ready, say what is pending or blocked by what, and end the turn.
    Open your reply with it, for example `Slice S3: Reject a malformed header (also ready: S5)`.
 

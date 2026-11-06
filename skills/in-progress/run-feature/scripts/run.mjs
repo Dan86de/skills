@@ -340,6 +340,13 @@ function sliceStates(worktree, base, slices) {
   return { done, pending, ready };
 }
 
+// Slices a person must act on wait until the unattended work is done.
+function nextSlice(ready) {
+  const byId = (a, b) => a.id.localeCompare(b.id, "en", { numeric: true });
+  const afk = ready.filter((slice) => slice.autonomy !== "hitl").sort(byId);
+  return (afk[0] ?? [...ready].sort(byId)[0])?.id;
+}
+
 // A proven bug the close could not fix: the newest Address review names each
 // one in a Known-Failure trailer and leaves the PR a draft for a person.
 function knownFailures(worktree, base) {
@@ -689,11 +696,9 @@ async function main() {
     }
 
     iteration++;
-    // implement-slice takes the lowest ready id, so a failed iteration is
-    // attributed to that slice.
-    const expected = states.ready
-      .map((slice) => slice.id)
-      .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))[0];
+    // implement-slice takes the lowest ready afk id, or the lowest ready id
+    // when none is afk, so a failed iteration is attributed to that slice.
+    const expected = nextSlice(states.ready);
     const title = slices.find((slice) => slice.id === expected)?.title ?? expected;
     const retrying = failingSlice === expected;
     if (!allDone) reportSteps(planSteps(slices, states, { running: expected }));
@@ -720,6 +725,18 @@ async function main() {
     );
     lastSession = sessionId;
     if (!progressed) {
+      // implement-slice leaves its diff only when it stopped for the user to
+      // decide, and refuses a dirty tree on the next attempt, so a retry
+      // could only fail again.
+      if (git(worktree, ["status", "--porcelain"]) !== "") {
+        reportSteps(planSteps(slices, after, { failed: expected }));
+        halt(
+          "slice stopped",
+          `slice ${expected} stopped for you with uncommitted changes in the worktree; read its session's report, commit or discard them, then re-kick`,
+          worktree,
+          { outcome: "waiting" },
+        );
+      }
       if (retrying) {
         reportSteps(planSteps(slices, after, { failed: expected }));
         halt("no progress", `no progress: slice ${expected} failed twice in a row`, worktree, { outcome: "failed" });
