@@ -49,7 +49,7 @@ Run nothing to produce evidence, and claim a test failed before the change only 
 
 | Level | Any of these |
 | --- | --- |
-| `read` | one-way door; a `[blocks]` finding or `possible bug` question open at `HEAD`; a pending sign-off; `Evidence: none`; a self-graded verdict |
+| `read` | one-way door; a `[blocks]` finding or `possible bug` question open at `HEAD`; a `Known-Failure` trailer on the newest `Address review` commit; a pending sign-off; `Evidence: none`; a self-graded verdict |
 | `spot-check` | two-way with wide blast radius; any other `[question]` open at `HEAD`; an unticked manual check; over the step 7 budget |
 | `skim` | none of the above |
 

@@ -12,15 +12,23 @@ prove-change keeps a finding only with a test or driver that fails at `HEAD`, ha
 
 prove-change reads only committed questions, so a `possible bug:` question from the close's own review never reaches it: fix it, or mark it ` => stands:` with why, never leave it unmarked.
 
-A proof is read-only: never edit it or a file it imports that prove-change handed over, so the fix answers the proof rather than the other way round.
+A proof is read-only: never edit it or a file it imports that prove-change handed over, so the fix answers the proof rather than the other way round; the one exception is a known failure's mark.
 Delete one only when you can say in one line why it proves nothing, such as asserting what the spec rules out or what a recorded deviation already says the branch does instead; record that under `Deleted proofs:`, and list its finding under `Dropped` with `deleted proof` as its reason.
-Commit every surviving proof with the fix, and gate each like a slice's checks: a test passes under the project's tests, and a driver runs to exit 0 against a verify run started after your last edit.
+Commit every surviving proof with the fix, and gate each but a known failure like a slice's checks: a test passes under the project's tests, and a driver runs to exit 0 against a verify run started after your last edit.
 
 These stop the close like step 6:
 
 - prove-change stops, or returns without its recheck
 - a proof listed under `Not handed over`, since you would be fixing against a copy you cannot commit
-- a proof still failing after three different causes
+
+## A known failure
+
+A proof still failing after three different causes is a proven bug the close could not fix: commit it as a **known failure** rather than stopping or deleting it, so the bug stays tracked and CI stays green.
+Revert the failed causes, and keep the proof as handed over except for one edit to a test: the test runner's expected-failure mark naming the finding, such as `{ todo: "known failure: prove-change Q2 - <what the finding states>" }` on a `node:test` test.
+A driver needs no mark, as CI never runs one.
+Its finding's line in the `Proved:` block ends ` => stands: known failure, proof <proof path>, tried <each cause, separated by "; ">`, and the commit gets one `Known-Failure: <spec 3, Q2 or attack 1>` trailer for it.
+The close then leaves the PR a draft for a person.
+A later close takes each known failure as a kept finding again: when its proof passes, remove the mark, and the new `Address review` carries no `Known-Failure` trailer for it.
 
 ## The Proved block
 
@@ -32,6 +40,7 @@ Proved: prove-change at <short HEAD it ran on>, <n> kept, <n> not asked for, <n>
 - Q2 <the question's line without its leading "- "> => fixed: <what changed>, proof <proof path>
 - attack 1 - <what the finding states> - <proof path> => fixed: <what changed>
 - spec 9 not asked for - <diff lines> - <spec line> => stands: <why it is kept>
+- Q4 <the question's line without its leading "- "> => stands: known failure, proof <proof path>, tried <cause 1>; <cause 2>; <cause 3>
 
 Dropped:
 - Q1 <the question's line without its leading "- "> => stands: not proven, <the report's reason>
@@ -46,4 +55,4 @@ Deleted proofs:
 A question keeps its line word for word, so the outcome after it settles every copy of that line in the branch's log, and none is left without `=> fixed`, `=> stands`, or a place under `Dropped`.
 Apart from `deleted proof`, every reason under `Dropped` is the report's word for word, so the PR shows what the provers said.
 `Dropped` and `Deleted proofs` read `- none` when empty.
-Each proof also gets a line under the commit's checks: `- <spec 3, Q2 or attack 1> -> <proof path>: pass`.
+Each proof also gets a line under the commit's checks: `- <spec 3, Q2 or attack 1> -> <proof path>: pass`, or `known failure` in place of `pass`.

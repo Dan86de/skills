@@ -88,7 +88,7 @@ Progress lives only in git: a slice is done when its commit is on the branch.
    Fix every `blocks` finding, settle every prove-change finding per [references/proving.md](references/proving.md), regate what the fixes touched, and mark the block as in step 7.
    Commit as `Address review` with proof, block and `Proved:` block, push, and render it under `## Branch review` per [references/pr-section.md](references/pr-section.md).
    When a commit carrying `Slice: <id>` lists `Awaiting sign-off:` items, write the checklist per [references/manual-checks.md](references/manual-checks.md), last, so it describes the finished branch.
-   Call the Skill tool with "pr-brief", then mark the PR ready for review.
+   Call the Skill tool with "pr-brief", then mark the PR ready for review, unless the close committed a known failure per [references/proving.md](references/proving.md), which leaves it a draft.
    Resuming a close that stopped partway, skip what is already on the branch and still current.
 
 ## Report
@@ -98,4 +98,4 @@ The slice and its state, the commit and PR, the verify run, the review's `Open` 
 ## Guardrails
 
 Push only to `slices/<slug>`, edit only its PR's body and `attention:` labels, and never force push or merge.
-The slices file, the spec, and what the feature map already says are read-only, and every proof prove-change handed over is never edited and deleted only per [references/proving.md](references/proving.md).
+The slices file, the spec, and what the feature map already says are read-only, and every proof prove-change handed over is edited only by a known failure's mark and deleted only per [references/proving.md](references/proving.md).

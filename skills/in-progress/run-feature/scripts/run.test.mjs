@@ -100,6 +100,21 @@ const CLOSE_STAYS_DRAFT_STUB = CLAUDE_STUB.replace(
   '  execFileSync("gh", ["pr", "ready", "demo"]);',
   '  console.log("close session stopped before marking the PR ready");',
 );
+// A close that commits a proven bug it could not fix and leaves the PR a
+// draft, and the later close that fixes it.
+const closeCommitting = (message, ready) =>
+  CLAUDE_STUB.replace(
+    '  execFileSync("gh", ["pr", "ready", "demo"]);',
+    `  git("commit", "--allow-empty", "-m", ${JSON.stringify(message)});
+  git("push", "--quiet", "origin", "HEAD");
+${ready ? '  execFileSync("gh", ["pr", "ready", "demo"]);' : ""}`,
+  );
+const KNOWN_FAILURE_STUB = closeCommitting(
+  "Address review\n\nProved: Q2 => stands: known failure\n\nKnown-Failure: Q2",
+  false,
+);
+const KNOWN_FAILURE_FIXED_STUB = closeCommitting("Address review\n\nProved: Q2 => fixed: the bug", true);
+
 // An origin-less session: nothing to push to and no PR to mark ready.
 const LOCAL_ONLY_STUB = CLOSE_STAYS_DRAFT_STUB.replaceAll("origin/main..HEAD", "main..HEAD").replaceAll(
   'git("push", "--quiet", "origin", "HEAD");',
@@ -649,6 +664,43 @@ describe("run.mjs defers manual checks to the ready PR", () => {
   });
 });
 
+describe("run.mjs parks a known failure for a person", () => {
+  it("a close that commits a known failure ends the run waiting, naming it, though the PR is a draft", async () => {
+    const fixture = makeFixture(KNOWN_FAILURE_STUB);
+    const { result, calls } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    const [end] = callsTo(calls, "runEnd");
+    assert.equal(end.outcome, "waiting");
+    assert.match(end.detail, /Q2 as a known failure/);
+    assert.equal(callsTo(calls, "runSettle").at(-1).outcome, "completed");
+    assert.ok(existsSync(fixture.worktree), "worktree should be kept");
+  });
+
+  it("a known failure still halts as close incomplete when the close wrote no checklist", () => {
+    const stub = KNOWN_FAILURE_STUB.replace(
+      'git("commit", "--allow-empty", "-m", "Manual checks',
+      'if (false) git("commit", "--allow-empty", "-m", "Manual checks',
+    );
+    const { result } = runRunner(makeFixture(stub, DEFERRED_SLICES));
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /no commit with a Manual-Checks trailer/);
+  });
+
+  it("a body line reading Address review does not count as the close", () => {
+    const stub = closeCommitting("Note\n\nAddress review\n\nKnown-Failure: Q2", true);
+    const { result } = runRunner(makeFixture(stub));
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  it("a re-kick whose close fixes it completes, as only the newest Address review counts", () => {
+    const fixture = makeFixture(KNOWN_FAILURE_STUB);
+    assert.equal(runRunner(fixture).result.status, 2);
+    writeFileSync(path.join(fixture.bin, "claude"), KNOWN_FAILURE_FIXED_STUB);
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
 describe("run.mjs runs the pre-steps headlessly and gates on the verify skill", () => {
   // One run from a fixture holding only a committed decisions.md.
   let fixture;
@@ -848,6 +900,7 @@ describe("run.mjs fires one end-state banner", () => {
       ["no progress", makeFixture(IDLE_STUB)],
       ["awaiting sign-off", makeFixture(CLAUDE_STUB, HITL_SLICES)],
       ["close incomplete", makeFixture(CLOSE_STAYS_DRAFT_STUB)],
+      ["known failure", makeFixture(KNOWN_FAILURE_STUB)],
       ["iteration ceiling", makeFixture(CLAUDE_STUB, MANY_SLICES)],
       ["worktree not removed", makeFixture(dirtyCloseStub)],
       ["no verify skill", makeFixture(CLAUDE_STUB, SLICES, { verifySkill: false })],

@@ -340,6 +340,18 @@ function sliceStates(worktree, base, slices) {
   return { done, pending, ready };
 }
 
+// A proven bug the close could not fix: the newest Address review names each
+// one in a Known-Failure trailer and leaves the PR a draft for a person.
+function knownFailures(worktree, base) {
+  const commits = git(worktree, [
+    "log",
+    "--format=%s%x1f%(trailers:key=Known-Failure,valueonly,separator=%x1f)%x1e",
+    `${base}..HEAD`,
+  ]).split("\x1e");
+  const review = commits.map((commit) => commit.trim().split("\x1f")).find(([subject]) => subject === "Address review");
+  return review?.slice(1).filter(Boolean) ?? [];
+}
+
 // What the close session left undone, or null. A session can end without
 // finishing, so "complete" is only reported on what it actually left behind.
 // A hitl slice's manual items were confirmed through sign-off, so only the
@@ -630,10 +642,20 @@ async function main() {
     const allDone = slices.every((slice) => states.done.has(slice.id));
 
     if (allDone && closeRan) {
-      const gap = closeGap({ worktree, base, slices, slug, hasOrigin });
+      const known = knownFailures(worktree, base);
+      // A known failure leaves the PR a draft on purpose, so only the checklist is checked.
+      const gap = closeGap({ worktree, base, slices, slug, hasOrigin: hasOrigin && known.length === 0 });
       settleSession(closeSession, gap ? "failed" : "completed", gap);
       if (gap) {
         halt("close incomplete", `the close session did not finish: ${gap}; fix it or re-kick`, worktree);
+      }
+      if (known.length > 0) {
+        halt(
+          "known failure",
+          `the close committed ${known.join(", ")} as a known failure it could not fix, and left the PR a draft; read it under Needs you, then re-kick`,
+          worktree,
+          { outcome: "waiting" },
+        );
       }
       removeWorktree(repo, worktree);
       board.outcome = "completed";
