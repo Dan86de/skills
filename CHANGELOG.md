@@ -1,5 +1,12 @@
 # dan86de-skills
 
+## 0.16.3
+
+### Patch Changes
+
+- [#48](https://github.com/Dan86de/skills/pull/48) [`60bec9a`](https://github.com/Dan86de/skills/commit/60bec9aaab0bc6a5da451372026c879e74be9006) Thanks [@Dan86de](https://github.com/Dan86de)! - `implement-slice` and `run-feature` take ready `afk` slices before a ready `hitl` one, so a slice waiting on a person no longer blocks the unattended work.
+  `run-feature` halts as `slice stopped` with no retry when a session leaves uncommitted changes for the user, instead of retrying into the dirty tree and reporting the slice failed twice.
+
 ## 0.16.2
 
 ### Patch Changes
