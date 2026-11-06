@@ -147,19 +147,19 @@ A skill that reads tries the home first, then the fallbacks, so existing repos k
 
 | Path | Committed | Written by | Read by | Fallbacks |
 | --- | --- | --- | --- | --- |
-| `AGENTS.md` | yes | the user | review-change, every harness but Claude Code | none |
-| `CLAUDE.md` | yes | the user | review-change, Claude Code | none |
+| `AGENTS.md` | yes | the user | review-change, prove-change, every harness but Claude Code | none |
+| `CLAUDE.md` | yes | the user | review-change, prove-change, Claude Code | none |
 | `.gitignore` (the `.scratch/` line) | yes | the user | git | none |
 | `spec/vision.md` | yes | the user | interview, write-spec | none |
 | `spec/glossary.md` | yes | the user | interview, write-spec, pr-brief, recohere | `GLOSSARY.md`, `CONTEXT.md` |
 | `spec/features/<slug>/decisions.md` | yes | interview | write-spec | none |
-| `spec/features/<slug>/spec.md` | yes | write-spec | write-slices, implement-slice, pr-brief | none |
+| `spec/features/<slug>/spec.md` | yes | write-spec | write-slices, implement-slice, pr-brief, prove-change | none |
 | `spec/features/<slug>/slices.json` | yes | write-slices | implement-slice | none |
 | `.agents/coding-standards.md` | yes | codify | review-change, pr-brief, codify | `CODING_STANDARDS.md` |
-| `.agents/skills/verify/` | yes | make-verify | write-spec, write-slices, implement-slice | a harness skills folder |
+| `.agents/skills/verify/` | yes | make-verify | write-spec, write-slices, implement-slice, prove-change | a harness skills folder |
 | `.claude/settings.json` | yes | run-feature, seeded only when absent | Claude Code | none |
-| `docs/manual/` | yes | make-verify, implement-slice | the verify skill | none |
-| `.scratch/` | no | verify runs, explore maps, interview trees, recohere reports | the skill that wrote it | none |
+| `docs/manual/` | yes | make-verify, implement-slice | the verify skill, prove-change | none |
+| `.scratch/` | no | verify runs, explore maps, interview trees, recohere reports, prove-change worktrees | the skill that wrote it | none |
 
 Rules:
 

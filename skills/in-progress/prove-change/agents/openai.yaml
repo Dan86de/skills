@@ -1,0 +1,3 @@
+interface:
+  display_name: "Prove Change"
+  short_description: "Prove spec gaps and bugs on a branch with failing tests"

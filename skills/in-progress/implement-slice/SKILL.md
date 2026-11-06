@@ -83,17 +83,19 @@ Progress lives only in git: a slice is done when its commit is on the branch.
    After each commit, append the slice's section to `## Slices`, rendered from the commit per [references/pr-section.md](references/pr-section.md).
 
 9. **Close the branch** once every slice is done.
-   Call the Skill tool with "review-change" and the default branch, the only review that sees duplication between slices, and check the branch against the spec yourself.
-   Fix every `blocks` finding and spec gap, regate what the fixes touched, mark the block as in step 7, commit as `Address review` with proof and block, push, and render it under `## Branch review` per [references/pr-section.md](references/pr-section.md).
+   Call the Skill tool with "review-change" and the default branch, the only review that sees duplication between slices.
+   Then call the Skill tool with "prove-change" and the spec's path, so contexts that did not write the branch check it against the spec and settle its `possible bug:` questions; do not check it against the spec yourself.
+   Fix every `blocks` finding, settle every prove-change finding per [references/proving.md](references/proving.md), regate what the fixes touched, and mark the block as in step 7.
+   Commit as `Address review` with proof, block and `Proved:` block, push, and render it under `## Branch review` per [references/pr-section.md](references/pr-section.md).
    When a commit carrying `Slice: <id>` lists `Awaiting sign-off:` items, write the checklist per [references/manual-checks.md](references/manual-checks.md), last, so it describes the finished branch.
-   Call the Skill tool with "pr-brief", then mark the PR ready for review.
+   Call the Skill tool with "pr-brief", then mark the PR ready for review, unless the close committed a known failure per [references/proving.md](references/proving.md), which leaves it a draft.
    Resuming a close that stopped partway, skip what is already on the branch and still current.
 
 ## Report
 
-The slice and its state, the commit and PR, the verify run, the review's `Open` lines not marked `fixed`, any deviations, the PR's attention level and number of manual checks after step 9, and what is ready next.
+The slice and its state, the commit and PR, the verify run, the review's `Open` lines not marked `fixed`, any deviations, the PR's attention level, number of manual checks and any known failure left in a draft after step 9, and what is ready next.
 
 ## Guardrails
 
 Push only to `slices/<slug>`, edit only its PR's body and `attention:` labels, and never force push or merge.
-The slices file, the spec, and what the feature map already says are read-only.
+The slices file, the spec, and what the feature map already says are read-only, and every proof prove-change handed over is edited only by a known failure's mark and deleted only per [references/proving.md](references/proving.md).
