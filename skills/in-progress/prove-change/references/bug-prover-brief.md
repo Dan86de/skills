@@ -52,6 +52,9 @@ A bug a question already names belongs under that question, not here.
 A `proven` line is kept only with a **proof**: a new file that fails at `HEAD` for the reason the line states.
 A proof is either a test the project's test command runs, or a driver the verify skill or feature map runs.
 Prefer a test when one can show the bug; write a driver when only the running product can.
+Whoever fixes the bug may reshape any function behind it but may not edit your proof, so drive the proof from the outermost seam that shows the bug: the entry point the product itself calls, a request to its API, or a driver.
+A proof that calls an inner function directly tests that function's current signature, and stops proving anything once a fix changes it.
+When only a fault the product cannot provoke shows the bug, such as a store that fails, inject it through a dependency the code already takes as an argument, such as a store, a client or a callback, and drive the rest from that seam as usual; when the code takes none, drop the suspicion as one no test can pin.
 
 - Assert what should happen, so the proof fails now and passes once the bug is fixed.
   What should happen comes from the spec, the feature map, a decision record, or something the product itself shows the user, such as a count and the list it counts; name which.

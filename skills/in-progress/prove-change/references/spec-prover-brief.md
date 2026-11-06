@@ -54,6 +54,9 @@ It needs no run: name the diff lines that do it and the spec line it goes beyond
 A `missing` or `looks wrong` line is kept only with a **proof**: a new file that fails at `HEAD` for the reason the line states.
 A proof is either a test the project's test command runs, or a driver the verify skill or feature map runs.
 Prefer a test when one can show the gap; write a driver when only the running product can.
+Whoever fixes the gap may reshape any function behind it but may not edit your proof, so drive the proof from the outermost seam that shows the gap: the entry point the product itself calls, a request to its API, or a driver.
+A proof that calls an inner function directly tests that function's current signature, and stops proving anything once a fix changes it.
+When only a fault the product cannot provoke shows the gap, such as a store that fails, inject it through a dependency the code already takes as an argument, such as a store, a client or a callback, and drive the rest from that seam as usual; when the code takes none, drop the suspicion as one no test can pin.
 
 - Assert what the spec says, so the proof fails now and passes once the branch does what the spec says.
 - Add new files only, named after the behaviour.
