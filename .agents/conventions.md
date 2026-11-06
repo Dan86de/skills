@@ -151,7 +151,7 @@ A skill that reads tries the home first, then the fallbacks, so existing repos k
 | `CLAUDE.md` | yes | the user | review-change, prove-change, Claude Code | none |
 | `.gitignore` (the `.scratch/` line) | yes | the user | git | none |
 | `spec/vision.md` | yes | the user | interview, write-spec | none |
-| `spec/glossary.md` | yes | the user | interview, write-spec, pr-brief, recohere | `GLOSSARY.md`, `CONTEXT.md` |
+| `spec/glossary.md` | yes | the user | interview, write-spec, review-change, pr-brief, recohere | `GLOSSARY.md`, `CONTEXT.md` |
 | `spec/features/<slug>/decisions.md` | yes | interview | write-spec | none |
 | `spec/features/<slug>/spec.md` | yes | write-spec | write-slices, implement-slice, pr-brief, prove-change | none |
 | `spec/features/<slug>/slices.json` | yes | write-slices | implement-slice | none |
