@@ -55,4 +55,21 @@ Verify run `<run id>` · reviewed <n> files against <standards file names>
 The `## Branch review` section renders the `Address review` commit in the same shape, without the `###` line or the checks table.
 Its top line is `[<short SHA>](<commit URL>) · <project check commands> pass`.
 Each `Proved:` line above its `Dropped` renders by its outcome, its proof path linked as a `file:line` is: `fixed` under **Fixed in review** as `<spec 3, Q2 or attack 1> <what changed>, proved by <proof link>`, and `stands` under **Stands** as `<spec 9> not asked for: <diff links>. Kept: <stands reason>`.
-Each `Deleted proofs` line goes under **Needs you** as `**Deleted proof:** <proof path>: <why it proves nothing>`.
+Each `Deleted proofs` line goes last under **Needs you** as `**Deleted proof:** <proof path>: <why it proves nothing>`.
+Each line under `Dropped` renders in a second fold after the first, one line each, so the reader can judge whether the provers drop too much:
+
+````markdown
+<details>
+<summary>Dropped by prove-change: <n></summary>
+
+- <spec 5, Q3, attack 1 or attack> <link> <what it states> Why: <why it was dropped>
+
+</details>
+````
+
+`<n>` counts the lines.
+`<link>` is a question's first `file:line`, pinned to the oldest commit whose message holds the question, since the question describes the code there and a later commit may have moved it; any other line leaves it and its space out.
+For a question, `<what it states>` is its text between `possible bug: ` and ` => stands: not proven, `, and `<why it was dropped>` the text after that.
+Any other line reads `<id> - <what it states> - <why it was dropped>`, its parts placed in the template without the ` - ` between them, and a `deleted proof` reason renders as that proof's `Deleted proofs` reason.
+`<what it states>` ends in a period when it has no closing punctuation of its own.
+The fold is left out when `Dropped` reads `- none`.

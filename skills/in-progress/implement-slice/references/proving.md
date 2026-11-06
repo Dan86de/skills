@@ -13,7 +13,7 @@ prove-change keeps a finding only with a test or driver that fails at `HEAD`, ha
 prove-change reads only committed questions, so a `possible bug:` question from the close's own review never reaches it: fix it, or mark it ` => stands:` with why, never leave it unmarked.
 
 A proof is read-only: never edit it or a file it imports that prove-change handed over, so the fix answers the proof rather than the other way round.
-Delete one only when you can say in one line why it proves nothing, such as asserting what the spec rules out or what a recorded deviation already says the branch does instead; record that under `Deleted proofs:`, and its finding counts as dropped with that reason.
+Delete one only when you can say in one line why it proves nothing, such as asserting what the spec rules out or what a recorded deviation already says the branch does instead; record that under `Deleted proofs:`, and list its finding under `Dropped` with `deleted proof` as its reason.
 Commit every surviving proof with the fix, and gate each like a slice's checks: a test passes under the project's tests, and a driver runs to exit 0 against a verify run started after your last edit.
 
 These stop the close like step 6:
@@ -35,12 +35,15 @@ Proved: prove-change at <short HEAD it ran on>, <n> kept, <n> not asked for, <n>
 
 Dropped:
 - Q1 <the question's line without its leading "- "> => stands: not proven, <the report's reason>
-- spec 5 - <the report's reason>
+- spec 5 - <what the finding or suspicion states> - <the report's reason>
+- attack 1 - <what the finding states> - deleted proof
+- attack - <a suspicion the bug prover dropped> - <the report's reason>
 
 Deleted proofs:
 - <proof path> - <why it proves nothing>
 ```
 
 A question keeps its line word for word, so the outcome after it settles every copy of that line in the branch's log, and none is left without `=> fixed`, `=> stands`, or a place under `Dropped`.
+Apart from `deleted proof`, every reason under `Dropped` is the report's word for word, so the PR shows what the provers said.
 `Dropped` and `Deleted proofs` read `- none` when empty.
 Each proof also gets a line under the commit's checks: `- <spec 3, Q2 or attack 1> -> <proof path>: pass`.
