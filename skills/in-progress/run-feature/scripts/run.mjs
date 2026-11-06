@@ -256,9 +256,50 @@ function readSlices(worktree, slug) {
 function commitFile(worktree, relative, message, hasOrigin) {
   git(worktree, ["add", relative]);
   if (!gitOk(worktree, ["diff", "--cached", "--quiet"])) {
-    git(worktree, ["commit", "--quiet", "-m", message]);
+    gitOrHalt(worktree, ["commit", "--quiet", "-m", message], "commit refused", `committing ${relative}`);
   }
-  if (hasOrigin) git(worktree, ["push", "--quiet", "origin", "HEAD"]);
+  if (hasOrigin) gitOrHalt(worktree, ["push", "--quiet", "origin", "HEAD"], "push refused", `pushing ${relative}`);
+}
+
+// A hook or remote can refuse what the runner commits; that is a halt naming
+// git's own reason, never a stack trace.
+function gitOrHalt(worktree, args, state, doing) {
+  const result = spawnSync("git", ["-C", worktree, ...args], { encoding: "utf8" });
+  if (result.status === 0) return;
+  const cause = (result.stderr || result.stdout || "").trim() || `git exited with ${result.status}`;
+  halt(state, `git refused ${doing}: ${cause}; fix it in the worktree, then re-kick`, worktree);
+}
+
+// The lockfile names the package manager, and its frozen install is the one
+// that never rewrites the lockfile.
+const INSTALLERS = [
+  ["pnpm-lock.yaml", "pnpm", ["install", "--frozen-lockfile"]],
+  ["package-lock.json", "npm", ["ci"]],
+  ["yarn.lock", "yarn", ["install", "--frozen-lockfile"]],
+  ["bun.lock", "bun", ["install", "--frozen-lockfile"]],
+  ["bun.lockb", "bun", ["install", "--frozen-lockfile"]],
+];
+
+// A fresh worktree has no node_modules, and a project's commit hooks and
+// verify skill usually need them, so the worktree gets them before any session.
+async function installDependencies(worktree) {
+  if (existsSync(path.join(worktree, "node_modules"))) return;
+  const installer = INSTALLERS.find(([lockfile]) => existsSync(path.join(worktree, lockfile)));
+  if (!installer) return;
+  const [lockfile, command, args] = installer;
+  log(`installing dependencies: ${command} ${args.join(" ")}`);
+  const { status, error } = await waitFor(command, args, {
+    cwd: worktree,
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  if (status !== 0) {
+    const cause = error ? error.message : `it exited with ${status}`;
+    halt(
+      "install failed",
+      `${command} ${args.join(" ")} failed for ${lockfile}: ${cause}; install by hand in the worktree, then re-kick`,
+      worktree,
+    );
+  }
 }
 
 // Seed a project that has no committed Claude settings with a default Bash
@@ -540,6 +581,8 @@ async function main() {
     }
   }
 
+  await installDependencies(worktree);
+
   if (!hasVerifySkill(worktree)) {
     halt(
       "no verify skill",
@@ -668,4 +711,5 @@ async function main() {
   }
 }
 
-main();
+// Anything unforeseen still ends as a readable bad-environment exit.
+main().catch((error) => fail(`unexpected error: ${error.message}`));
