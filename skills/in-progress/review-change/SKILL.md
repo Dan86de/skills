@@ -20,6 +20,7 @@ Arguments: an optional fixed point, an optional `--no-check`, then optional stan
 
 2. **Find the standards**, all of them, in precedence order: paths passed as arguments, `.agents/coding-standards.md`, `CODING_STANDARDS.md`, `CONTRIBUTING.md` and any other doc on how to write code here (not a user manual, product doc, or brand guide).
    Also collect the linter, formatter and type-checker configs the project's check command uses (not build or test-runner configs), and every `AGENTS.md` and `CLAUDE.md` at the root or in a touched directory.
+   Read the glossary too, `spec/glossary.md` (else `GLOSSARY.md` or `CONTEXT.md`), as the names a **Drifted term** is judged against.
    No standards at all is normal: the review runs on the baseline.
 
 3. **Run one reviewer** in a fresh subagent, passing everything below the line in [references/reviewer-brief.md](references/reviewer-brief.md) with placeholders filled and paths absolute.
