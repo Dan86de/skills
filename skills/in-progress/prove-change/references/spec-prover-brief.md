@@ -61,6 +61,7 @@ When only a fault the product cannot provoke shows the gap, such as a store that
 - Assert what the spec says, so the proof fails now and passes once the branch does what the spec says.
 - Add new files only, named after the behaviour.
   Never edit product code or an existing test, driver or helper; import a helper, or write what you need inside your file.
+- Make it pass the project's typecheck and lint: it gets committed as it is, and nobody may edit it.
 - Run it, and keep the exact command and its first failing line.
   A driver fails with `not ok - ` and exit 1, as the verify skill describes; a usage error, a missing build, or any other setup failure proves nothing, so fix the setup and run it again.
 - Every suspicion gets a proof written and run before you judge it; never argue one away from the spec's wording or the code alone.

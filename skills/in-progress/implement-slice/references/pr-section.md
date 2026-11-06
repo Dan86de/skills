@@ -54,3 +54,5 @@ Verify run `<run id>` · reviewed <n> files against <standards file names>
 
 The `## Branch review` section renders the `Address review` commit in the same shape, without the `###` line or the checks table.
 Its top line is `[<short SHA>](<commit URL>) · <project check commands> pass`.
+Each `Proved:` line above its `Dropped` renders by its outcome, its proof path linked as a `file:line` is: `fixed` under **Fixed in review** as `<spec 3, Q2 or attack 1> <what changed>, proved by <proof link>`, and `stands` under **Stands** as `<spec 9> not asked for: <diff links>. Kept: <stands reason>`.
+Each `Deleted proofs` line goes under **Needs you** as `**Deleted proof:** <proof path>: <why it proves nothing>`.

@@ -22,6 +22,12 @@ Changed files:
 <Q1 to Qn, one per line, each the question's line verbatim, or "none">
 ```
 
+**Recorded deviations**, which the branch's commits list under `Deviations:`:
+
+```text
+<deviations, or "none">
+```
+
 **Agent instructions**: `<agent-instruction-paths, or "none">`.
 **Verify skill**: `<verify-skill-path, or "none">`, with its feature map at `<feature-map-path, or "none">`.
 
@@ -46,6 +52,7 @@ Then attack the change itself, as a user and as a second caller would.
 Look for what the questions did not ask: a state the diff forgot, an error path, an old record, a restart, a narrow screen, two of something where the code expects one, a count that points at nothing.
 Look hardest at what a user can reach that no existing test or driver drives.
 A bug a question already names belongs under that question, not here.
+A departure a recorded deviation names is not a bug, even when you disagree with it, and neither is what it plainly leads to: a reader already sees it.
 
 ## Prove it
 
@@ -60,6 +67,7 @@ When only a fault the product cannot provoke shows the bug, such as a store that
   What should happen comes from the spec, the feature map, a decision record, or something the product itself shows the user, such as a count and the list it counts; name which.
 - Add new files only, named after the bug.
   Never edit product code or an existing test, driver or helper; import a helper, or write what you need inside your file.
+- Make it pass the project's typecheck and lint: it gets committed as it is, and nobody may edit it.
 - Run it, and keep the exact command and its first failing line.
   A driver fails with `not ok - ` and exit 1, as the verify skill describes; a usage error, a missing build, or any other setup failure proves nothing, so fix the setup and run it again.
 - Every suspicion gets a proof written and run before you judge it.

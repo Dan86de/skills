@@ -48,13 +48,15 @@ Arguments: the spec's path, then an optional fixed point.
 
 6. **Check the bug prover's block**: it matches the brief's template, and `Questions` has exactly one line per open question, each `proven` or `dropped`.
    Every `proven` line, in `Questions` or `Attack`, names a proof file in the prover's worktree and the command that fails; every `dropped` line, and every line under `Dropped`, gives one reason.
-   `Attack` holds only bugs that no open question names, or `- none found` with what was attacked.
+   `Attack` holds only bugs that no open question or recorded deviation names, or `- none found` with what was attacked.
 
 7. **Send back a block that misses** once, naming what failed; if it still fails, return it with a `Shape:` line after it.
 
 8. **Recheck every proof at `HEAD`** yourself: each `missing` and `looks wrong` line, and each `proven` line in `Questions` or `Attack`.
    First run `git -C <worktree> status --porcelain` in each prover's worktree: a proof is an untracked file, and any tracked file shown changed is product code the prover edited against its brief.
    Restore each such file with `git -C <worktree> restore --source=HEAD --staged --worktree -- <path>`, and name it in the report, so every proof reruns against `HEAD` as committed; a proof that then fails on setup is dropped with that edit as its reason.
+   Then run the project's typecheck and lint in each prover's worktree, with its proofs in place: a proof gets committed unedited, and running it does not check its types.
+   Send each prover whose proof fails them back once, naming the errors, and recheck what it returns; a proof that still fails them is dropped with its first error as the reason.
    Then run each proof's command twice in its prover's worktree, as the verify skill says: a driver's `$run` is a verify run you start there, and stop after.
    Keep a finding only when both runs fail for the reason its line states, with the first failing line it records, IDs and timings aside: a test on that assertion, and a driver with that `not ok - ` line and exit 1.
    Drop it with a one-line reason when either run passes, exits 2, fails on setup such as a missing module, a missing build, a syntax or type error in the proof itself, or a timeout, or fails on anything other than what the line states.
