@@ -32,7 +32,7 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - Keys that run by repo and slug, so a re-kick reopens the feature's card on the Runs page instead of starting another.
 - Names the session it was kicked from, read from `AGENTS_HQ_SESSION_ID`, as the run's launcher, so the card shows `Started from`; a kick from outside any session names none and the card keeps the last one, and a daemon on contract 6 or earlier ignores the name and shows no line.
 - Reports the whole plan to the run on every state change, from the first moment the slices file exists, and links each slice session to its slice; a session that is not a slice (writing the spec or slices, closing the branch) has no link.
-- Ends the run with an outcome the card can read: `waiting` when a sign-off halts it or the close commits a known failure, `stopped` with `re-kick to continue` at the session ceiling, `failed` when a slice fails twice in a row, `stopped` with the reason for any other halt, `failed` for a bad-input or environment exit, and `completed` on a clean finish.
+- Ends the run with an outcome the card can read: `waiting` when a sign-off or a stopped slice halts it or the close commits a known failure, `stopped` with `re-kick to continue` at the session ceiling, `failed` when a slice fails twice in a row, `stopped` with the reason for any other halt, `failed` for a bad-input or environment exit, and `completed` on a clean finish.
 - Appends a headless note to every session's system prompt, so a skill that would end its turn asking a question settles the choice with its own default instead of stalling the run.
 - Refuses the kick readably when `slices/<slug>` is already checked out somewhere, naming the checkout to switch, instead of failing inside `git worktree add`.
 - Between iterations it decides from `git log` trailers and `slices.json` alone, never from session stdout.
@@ -44,7 +44,9 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
   A close whose newest `Address review` commit carries a `Known-Failure:` trailer is a `known failure` halt instead: a proven bug it could not fix, left in a draft PR for a person.
 - A kept worktree from a halted run is resumed by typing the same command again once its tree is committed or clean; nothing resumes on its own, and a foreign directory at the worktree path refuses.
 - A session the daemon loses halts as `session lost` and one ended in agents-hq halts as `session ended`, with no retry for either: a lost session may still be working in the worktree, and a person who ended one wants the kick to stop.
-- A failed iteration gets one retry; the same slice failing twice in a row halts, as does the 12-session ceiling per kick and a `hitl` slice, one needing an action only a person can take, with nothing else ready.
+- A ready `hitl` slice, one needing an action only a person can take, runs only once no ready `afk` slice is left, so the unattended work lands first.
+- A failed iteration gets one retry; the same slice failing twice in a row halts, as does the 12-session ceiling per kick and a pending `hitl` slice with nothing else ready.
+- A session that commits nothing and leaves uncommitted changes stopped for the user to decide, so it halts as `slice stopped` with no retry, which would only meet the dirty tree.
 - Exit codes: 0 is clean completion with the worktree removed and the branch and PR intact; 1 is bad input or environment; 2 is a halt, which always keeps the worktree so a human can cd in and fix.
 - Every end state, success or halt, fires exactly one macOS banner with sound carrying only the end state name; detail stays in the terminal output and the PR, and a machine that cannot show the banner just logs that it was skipped.
 

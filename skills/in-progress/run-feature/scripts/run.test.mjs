@@ -64,9 +64,10 @@ const read = (key) =>
   );
 const done = read("Slice");
 const pending = read("Slice-Pending");
-const next = slices.find(
+const ready = slices.filter(
   (s) => !done.has(s.id) && !pending.has(s.id) && s.blocked_by.every((b) => done.has(b)),
 );
+const next = ready.find((s) => s.autonomy !== "hitl") ?? ready[0];
 if (!next) {
   if (slices.some((s) => s.autonomy !== "hitl" && s.done?.manual?.length > 0)) {
     git("commit", "--allow-empty", "-m", "Manual checks\\n\\n- S1: Looks right\\n\\nManual-Checks: 1");
@@ -595,6 +596,31 @@ if (attempts === 1) {
     // The failed attempt, its retry landing S1, then S2 and the close pass.
     assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 4);
     assert.ok(!existsSync(fixture.worktree), "worktree should be removed");
+  });
+
+  it("a session that stops with uncommitted changes halts for the user without a retry", () => {
+    const dirty = IDLE_STUB + `require("node:fs").writeFileSync("draft.md", "half done\\n");\n`;
+    const fixture = makeFixture(dirty);
+    const { result, claudeLog } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /slice S1 stopped for you with uncommitted changes/);
+    assert.ok(existsSync(path.join(fixture.worktree, "draft.md")), "the draft should be kept");
+    assert.equal(readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length, 1);
+  });
+
+  it("a ready hitl slice waits until every ready afk slice has run", () => {
+    const fixture = makeFixture(CLAUDE_STUB, {
+      spec: SLICES.spec,
+      slices: [
+        { id: "S1", title: "Needs a person", blocked_by: [], autonomy: "hitl" },
+        { id: "S2", title: "Unattended", blocked_by: [], autonomy: "afk" },
+      ],
+    });
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    const subjects = git(fixture.repo, "log", "--format=%s", "origin/main..origin/slices/demo");
+    assert.deepEqual(subjects.split("\n").slice(0, 2), ["Needs a person", "Unattended"]);
+    assert.match(result.stderr, /waiting for human sign-off on S1/);
   });
 
   it("a pending hitl slice with nothing else ready halts naming the waiting slice", () => {
