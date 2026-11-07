@@ -105,16 +105,18 @@ function gitOk(repo, args) {
 }
 
 function parseArgs(argv) {
-  const args = { repo: process.cwd(), slug: null };
+  const args = { repo: process.cwd(), slug: null, onHost: false };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--repo") {
       args.repo = argv[++i] ?? fail("--repo needs a path");
+    } else if (argv[i] === "--on-host") {
+      args.onHost = true;
     } else {
       rest.push(argv[i]);
     }
   }
-  if (rest.length !== 1) fail("usage: node run.mjs <slug> [--repo <path>]");
+  if (rest.length !== 1) fail("usage: node run.mjs <slug> [--repo <path>] [--on-host]");
   args.slug = rest[0];
   if (!/^[a-z0-9-]+$/.test(args.slug)) fail(`slug "${args.slug}" is not lowercase kebab-case`);
   args.repo = path.resolve(args.repo);
@@ -571,7 +573,14 @@ async function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) 
 }
 
 async function main() {
-  const { repo, slug } = parseArgs(process.argv.slice(2));
+  const { repo, slug, onHost } = parseArgs(process.argv.slice(2));
+  // No session starts in a container yet.
+  if (!onHost) {
+    fail(
+      "refusing to start sessions outside a container: they would run on this host with full access, beside your credentials; pass --on-host to run them here anyway",
+    );
+  }
+  log("on host: --on-host given, so every session runs outside a container, with full access");
   if (!gitOk(repo, ["rev-parse", "--git-dir"])) fail(`${repo} is not a git repository`);
 
   const branch = defaultBranch(repo);

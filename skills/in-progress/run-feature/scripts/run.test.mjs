@@ -1,6 +1,7 @@
 // Seam tests for run.mjs: drive the runner's process boundary against a
 // throwaway target repo with a stub harness and gh on PATH.
-// Covers slices S1 through S6 of spec/features/run-feature/spec.md.
+// Covers slices S1 through S6 of spec/features/run-feature/spec.md, and the
+// refusal to start sessions on the host without --on-host.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -326,10 +327,10 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", ex
 
 // One kick against a fake daemon on the given contract, returning what the
 // runner sent it in order.
-async function runRunnerWithDaemon(fixture, { contractVersion, failingTag, exitCode, env } = {}) {
+async function runRunnerWithDaemon(fixture, { contractVersion, failingTag, exitCode, env, args } = {}) {
   const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag, exitCode);
   try {
-    const run = runRunner(fixture, { ...daemonEnv, ...env });
+    const run = runRunner(fixture, { ...daemonEnv, ...env }, args);
     const calls = readFileSync(daemonLog, "utf8")
       .split("\n")
       .filter(Boolean)
@@ -418,7 +419,10 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   return { tmp, repo, bin, worktree };
 }
 
-function runRunner(fixture, env = {}) {
+// A kick on the host, as every test but the refusal ones takes it.
+const ON_HOST = ["demo", "--on-host"];
+
+function runRunner(fixture, env = {}, args = ON_HOST) {
   const claudeLog = path.join(fixture.tmp, "claude.log");
   const ghLog = path.join(fixture.tmp, "gh.log");
   const osaLog = path.join(fixture.tmp, "osascript.log");
@@ -427,7 +431,7 @@ function runRunner(fixture, env = {}) {
   writeFileSync(claudeLog, "");
   writeFileSync(ghLog, "");
   writeFileSync(osaLog, "");
-  const result = spawnSync("node", [RUNNER, "demo"], {
+  const result = spawnSync("node", [RUNNER, ...args], {
     cwd: fixture.repo,
     encoding: "utf8",
     env: {
@@ -1230,7 +1234,7 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     writeFileSync(path.join(fixture.bin, "claude"), "#!/bin/sh\nsleep 1\n");
     const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture);
     try {
-      const runner = spawn("node", [RUNNER, "demo"], {
+      const runner = spawn("node", [RUNNER, ...ON_HOST], {
         cwd: fixture.repo,
         stdio: "ignore",
         env: { ...process.env, ...daemonEnv, AGENTS_HQ_SESSION_ID: undefined, PATH: `${fixture.bin}:${process.env.PATH}` },
@@ -1263,6 +1267,47 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     assert.match(result.stderr, /contract 4/);
     assert.deepEqual(callsTo(calls, "runStart"), []);
     assert.match(result.stdout, /running outside agents-hq/);
+  });
+});
+
+describe("run.mjs refuses to start sessions outside a container without --on-host", () => {
+  const sessionsIn = (claudeLog) => readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length;
+
+  it("through the daemon, a kick without --on-host refuses before any session or run", async () => {
+    const fixture = makeFixture();
+    const { result, calls, claudeLog, osaLog } = await runRunnerWithDaemon(fixture, { args: ["demo"] });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /refusing to start sessions outside a container.*pass --on-host/);
+    assert.deepEqual(calls, []);
+    assert.equal(sessionsIn(claudeLog), 0);
+    assert.equal(existsSync(fixture.worktree), false);
+    assert.deepEqual(bannerPayloads(osaLog), []);
+  });
+
+  it("through the daemon, a kick with --on-host runs and its report carries the flag", async () => {
+    const fixture = makeFixture();
+    const { result, calls } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout.split("\n")[0], /^\[run-feature\] on host: --on-host given/);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 3);
+  });
+
+  it("with no daemon, the claude -p fallback is refused the same way without --on-host", () => {
+    const fixture = makeFixture();
+    const { result, claudeLog } = runRunner(fixture, {}, ["demo"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /refusing to start sessions outside a container.*pass --on-host/);
+    assert.equal(sessionsIn(claudeLog), 0);
+    assert.equal(existsSync(fixture.worktree), false);
+  });
+
+  it("with no daemon and --on-host, the fallback runs and its report carries the flag", () => {
+    const fixture = makeFixture();
+    const { result, claudeLog } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout.split("\n")[0], /^\[run-feature\] on host: --on-host given/);
+    assert.match(result.stdout, /running outside agents-hq/);
+    assert.equal(sessionsIn(claudeLog), 3);
   });
 });
 

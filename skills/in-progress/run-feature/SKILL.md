@@ -14,12 +14,15 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 2. **Check the input**: `spec/features/<slug>/decisions.md`, or an already written `spec.md`, is committed.
    With both missing, tell the user to settle the decisions first and end the turn.
 3. **Kick the run**: from the target repo's root, run `node <skill-folder>/scripts/run.mjs <slug>`, resolving the script's full path from this skill's folder, and stream its output.
+   Add `--on-host` only when the user asked to run on this machine; without it the script refuses, and that refusal is the end state to report.
    When the target repo's own checkout is sitting on `slices/<slug>` with a clean tree, switch it back to the default branch first; the script refuses to run while any checkout holds the branch.
    Do not parse the harness sessions' output for state; the script already decides from git alone.
-4. **Report the end state**: the exit code, the slices landed, the worktree path, and the PR.
+4. **Report the end state**: the exit code, the slices landed, the worktree path, the PR, and whether it ran with `--on-host`.
 
 ## What the script does
 
+- Refuses the kick before any git or session work unless it is given `--on-host`, since no session starts in a container yet and each would run on the host with full access, beside the shell's credentials.
+  With the flag it logs `on host: --on-host given` as its first line, so the run's report carries it.
 - Creates the worktree as a sibling of the repo, named `<repo>-slices-<slug>`, on the branch `slices/<slug>`, so the main checkout stays untouched.
 - Halts before any harness session when the project has no verify skill, naming make-verify.
 - Installs the worktree's dependencies before any session when it has a lockfile and no `node_modules`, with the lockfile's frozen install: pnpm, npm, yarn or bun.
