@@ -38,7 +38,7 @@ const TOKEN_MINTER = "github-app-token";
 // session holds a GitHub credential, so each reads the PR here and writes the
 // changes it wants, which the runner applies once it has pushed the session's work.
 const PR_DIR = ".run-feature";
-const PR_FILE = path.join(PR_DIR, "pr.json");
+const PR_FILE = `${PR_DIR}/pr.json`;
 // The only labels a session may set, as implement-slice and pr-brief touch no others.
 const PR_LABEL_PREFIX = "attention: ";
 
@@ -389,23 +389,26 @@ function prToken(remote) {
   return mintToken(remote.repository, remote.worktree, "pr refused");
 }
 
+// A gh call that prints a JSON list; anything else halts rather than guessing.
+function githubList(remote, token, args, doing) {
+  let list;
+  try {
+    list = JSON.parse(github(remote, token, args, doing));
+  } catch {
+    list = undefined;
+  }
+  if (!Array.isArray(list)) halt("pr refused", `gh gave no list ${doing}; fix it, then re-kick`, remote.worktree);
+  return list;
+}
+
 // The open PR from slices/<slug>, or null when none is open.
 function findPr(remote, token) {
-  const doing = `reading the PR for slices/${remote.slug}`;
-  const printed = github(
+  const [pr] = githubList(
     remote,
     token,
     ["pr", "list", "--head", `slices/${remote.slug}`, "--state", "open", "--limit", "1", "--json", "number,url,title,body,labels,isDraft"],
-    doing,
+    `reading the PR for slices/${remote.slug}`,
   );
-  let prs;
-  try {
-    prs = JSON.parse(printed);
-  } catch {
-    prs = undefined;
-  }
-  if (!Array.isArray(prs)) halt("pr refused", `gh gave no PR list ${doing}; fix it, then re-kick`, remote.worktree);
-  const [pr] = prs;
   return pr ? { ...pr, labels: pr.labels.map((label) => label.name) } : null;
 }
 
@@ -440,7 +443,11 @@ function writePrFile(remote) {
 // inside the worktree, so a link cannot have the runner post a host file.
 function readPrFile(worktree) {
   const file = path.join(worktree, PR_FILE);
-  if (!existsSync(file)) return null;
+  // lstat, as existsSync would read a dangling link as no file at all.
+  if (lstatSync(file, { throwIfNoEntry: false }) === undefined) return null;
+  if (!existsSync(file)) {
+    halt("pr refused", `${PR_FILE} in the worktree is not a plain file; remove it, then re-kick`, worktree);
+  }
   const expected = path.join(realpathSync(worktree), PR_FILE);
   if (realpathSync(file) !== expected || !lstatSync(file).isFile()) {
     halt("pr refused", `${PR_FILE} in the worktree is not a plain file; remove it, then re-kick`, worktree);
@@ -480,7 +487,7 @@ function applyPr(remote) {
     const add = attention(wanted.labels).filter((label) => !pr.labels.includes(label));
     const remove = attention(pr.labels).filter((label) => !wanted.labels.includes(label));
     if (add.length > 0) {
-      const existing = JSON.parse(github(remote, token, ["label", "list", "--limit", "1000", "--json", "name"], "listing labels"));
+      const existing = githubList(remote, token, ["label", "list", "--limit", "1000", "--json", "name"], "listing labels");
       for (const label of add.filter((name) => !existing.some((entry) => entry.name === name))) {
         github(remote, token, ["label", "create", label], `creating the label ${label}`);
       }
@@ -634,7 +641,7 @@ const HEADLESS_NOTE =
 // PR only through the PR file, which the runner applies as the GitHub App.
 const PR_NOTE =
   "run-feature owns this branch's pushes and pull request, so never run `git push` or `gh`: " +
-  "after the session the runner pushes HEAD, then applies `.run-feature/pr.json` at the worktree root, which git ignores. " +
+  `after the session the runner pushes HEAD, then applies \`${PR_FILE}\` at the worktree root, which git ignores. ` +
   "That file holds the PR: `repository` (owner/name), `base`, `head`, `number` and `url` (null until it is opened), " +
   "`title`, `body`, `labels` and `draft`. Read the PR from it, and change the PR by writing the file back: " +
   "set `title`, `body` and `draft: true` to open it, rewrite `body` to edit it, list its `attention:` labels in `labels`, " +
@@ -918,12 +925,12 @@ async function main() {
   }
 
   const remote = hasOrigin
-    ? { worktree, slug, base: branch, clone: hostClone(repo, slug), origin: originUrl(repo) }
+    ? (() => {
+        const origin = originUrl(repo);
+        return { worktree, slug, base: branch, clone: hostClone(repo, slug), origin, repository: appRemote(origin).repository };
+      })()
     : null;
-  if (remote) {
-    remote.repository = appRemote(remote.origin).repository;
-    excludePrFile(repo);
-  }
+  if (remote) excludePrFile(repo);
   const note = `${HEADLESS_NOTE} ${remote ? PR_NOTE : LOCAL_NOTE}`;
   const push = () => {
     if (remote) publish(remote);

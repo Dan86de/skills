@@ -161,6 +161,7 @@ A skill that reads tries the home first, then the fallbacks, so existing repos k
 | `docs/manual/` | yes | make-verify, implement-slice | the verify skill, prove-change | none |
 | `.git/run-feature/<slug>.git` | no | run-feature, deleted on a clean finish | run-feature | none |
 | `.run-feature/pr.json` | no | run-feature and the sessions it runs, deleted on a clean finish | run-feature, implement-slice, pr-brief | none |
+| `.git/info/exclude`, its `/.run-feature/` line | no | run-feature, kept so a re-kick's tree stays clean | git | none |
 | `.scratch/` | no | verify runs, explore maps, interview trees, recohere reports, prove-change worktrees | the skill that wrote it | none |
 
 Rules:

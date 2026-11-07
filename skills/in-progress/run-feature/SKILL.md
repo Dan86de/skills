@@ -38,7 +38,7 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - Pushes `slices/<slug>` itself after every session and every file it commits, never from the worktree.
   A bare clone at `.git/run-feature/<slug>.git` in the repo, which only the host writes, fetches the branch from the worktree, which runs none of the worktree's hooks, config or filters, and pushes it with `core.hooksPath=/dev/null`.
   The push carries a 1-hour GitHub App token printed by `github-app-token <owner>/<repo>` on `PATH`, goes to origin's HTTPS address even for a GitHub SSH remote, and leaves the user's and the system's git config files out, so no URL rewrite or stored login in them stands in for the App.
-  `scripts/github-app-token.mjs` is that minter: it signs as the App with the ID in `~/.config/agents-hq/github-app-id` and the key in `~/.config/agents-hq/github-app.pem`, and narrows each token to the one repository.
+  `scripts/github-app-token.mjs` is that minter, which the user puts on `PATH` as `github-app-token` with a wrapper that runs it: it signs as the App with the ID in `~/.config/agents-hq/github-app-id` and the key in `~/.config/agents-hq/github-app.pem`, and narrows each token to the one repository.
   A minter that fails halts as `push refused`.
   A clean finish deletes that clone with the worktree; a halt keeps both.
   With no minter on `PATH`, the push uses the shell's own git credential and the script says so once.

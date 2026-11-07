@@ -1854,7 +1854,8 @@ const slices = JSON.parse(`,
     const fixture = makeFixture(
       CONTAINER_STUB.replace('  markReady();', '  markReady();\n  execFileSync("gh", ["pr", "view"]);'),
     );
-    const { ghLog } = await runRunnerWithDaemon(fixture);
+    const { result, ghLog } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 0, result.stderr);
     const sessionCalls = ghCalls(ghLog).filter((call) => call.endsWith("[token none]"));
     assert.deepEqual(sessionCalls, ["pr view [token none]"]);
   });
@@ -1897,6 +1898,24 @@ const slices = JSON.parse(`,
     } finally {
       rmSync(secret, { force: true });
     }
+  });
+
+  it("a PR file a session left as a dangling link halts, rather than reading as no file", async () => {
+    const fixture = makeFixture(
+      CONTAINER_STUB.replace(
+        "const slices = JSON.parse(",
+        `require("node:fs").rmSync(".run-feature", { recursive: true, force: true });
+require("node:fs").mkdirSync(".run-feature");
+require("node:fs").symlinkSync("/nonexistent/pr.json", ".run-feature/pr.json");
+process.exit(0);
+const slices = JSON.parse(`,
+      ),
+    );
+    const { result, ghLog, osaLog } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /halt: \.run-feature\/pr\.json in the worktree is not a plain file/);
+    assert.deepEqual(bannerPayloads(osaLog), ["pr refused"]);
+    assert.ok(ghCalls(ghLog).every((call) => !call.startsWith("pr create")));
   });
 
   it("without a minter, the runner still owns the PR, through the shell's own gh login", () => {
