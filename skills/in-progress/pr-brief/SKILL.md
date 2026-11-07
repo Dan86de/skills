@@ -15,6 +15,7 @@ Describe commits only.
 Run `gh pr view --json number,url,body,headRefOid,labels,state`.
 If the open PR's head is not `HEAD`, stop: the branch needs pushing.
 With no open PR, `gh` or remote, print the body instead of applying it.
+When the system prompt names a run-feature PR file, run no `gh`: read the PR from that file, and skip the head check, since the runner pushes `HEAD` before it applies the file.
 
 ## 2. Gather
 
@@ -109,6 +110,7 @@ Read first:
 ## 8. Apply
 
 `gh pr edit <number> --body-file <tmpfile>`, then make `attention: <level>` the PR's only `attention:` label, creating `attention: read`, `attention: spot-check` and `attention: skim` if missing.
+With a run-feature PR file, write the body to its `body` and make `attention: <level>` the only `attention:` label in its `labels` instead; the runner applies both.
 
 ## 9. Report
 

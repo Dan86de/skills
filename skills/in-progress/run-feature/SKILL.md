@@ -14,17 +14,40 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 2. **Check the input**: `spec/features/<slug>/decisions.md`, or an already written `spec.md`, is committed.
    With both missing, tell the user to settle the decisions first and end the turn.
 3. **Kick the run**: from the target repo's root, run `node <skill-folder>/scripts/run.mjs <slug>`, resolving the script's full path from this skill's folder, and stream its output.
+   Add `--on-host` only when the user asked to run on this machine; without it the script refuses, and that refusal is the end state to report.
+   Add `--agent-account` when the daemon's sessions spend the separate agent account, as on the VM, so the run keeps that account's reserve.
    When the target repo's own checkout is sitting on `slices/<slug>` with a clean tree, switch it back to the default branch first; the script refuses to run while any checkout holds the branch.
    Do not parse the harness sessions' output for state; the script already decides from git alone.
-4. **Report the end state**: the exit code, the slices landed, the worktree path, and the PR.
+4. **Report the end state**: the exit code, the slices landed, the worktree path, the PR, and whether it ran with `--on-host` and `--agent-account`.
 
 ## What the script does
 
+- Refuses the kick before any git or session work unless it is given `--on-host`, since no session starts in a container yet and each would run on the host with full access, beside the shell's credentials.
+  With the flag it logs `on host: --on-host given` as its first line, so the run's report carries it.
+- With `--agent-account`, starts no session while the daemon's latest quota reading shows 95% of the week used or any usage limit, so 5% of the agent account's week is left for a person to debug a stuck run.
+  The current session finishes; the run then reads `waiting` with the reset time, fires one `waiting for quota` banner, and resumes by itself once the reset passes.
+  A session that a usage limit cut short, leaving a clean tree, is settled `stopped` and does not count as a failed attempt; the reserve never cuts one short.
+  A limit with no reset time halts as `quota reached`, with the run `waiting`.
+  A kick with no daemon has no reading, so no brake.
+  The flag names the account because its `setup-token` cannot.
 - Creates the worktree as a sibling of the repo, named `<repo>-slices-<slug>`, on the branch `slices/<slug>`, so the main checkout stays untouched.
 - Halts before any harness session when the project has no verify skill, naming make-verify.
 - Installs the worktree's dependencies before any session when it has a lockfile and no `node_modules`, with the lockfile's frozen install: pnpm, npm, yarn or bun.
   A failed install halts as `install failed`, since a project's commit hooks and verify skill usually need those dependencies.
 - Halts as `commit refused` or `push refused`, quoting git's reason, when a hook or the remote rejects a file the script commits itself.
+- Pushes `slices/<slug>` itself after every session and every file it commits, never from the worktree.
+  A bare clone at `.git/run-feature/<slug>.git` in the repo, which only the host writes, fetches the branch from the worktree, which runs none of the worktree's hooks, config or filters, and pushes it with `core.hooksPath=/dev/null`.
+  The push carries a 1-hour GitHub App token printed by `github-app-token <owner>/<repo>` on `PATH`, goes to origin's HTTPS address even for a GitHub SSH remote, and leaves the user's and the system's git config files out, so no URL rewrite or stored login in them stands in for the App.
+  `scripts/github-app-token.mjs` is that minter, which the user puts on `PATH` as `github-app-token` with a wrapper that runs it: it signs as the App with the ID in `~/.config/agents-hq/github-app-id` and the key in `~/.config/agents-hq/github-app.pem`, and narrows each token to the one repository.
+  A minter that fails halts as `push refused`.
+  A clean finish deletes that clone with the worktree; a halt keeps both.
+  With no minter on `PATH`, the push uses the shell's own git credential and the script says so once.
+  Between sessions it fetches nothing into the worktree, since a fetch there runs the worktree's own fsmonitor and hooks.
+- Owns the PR, so no session runs `gh` or `git push`, and every session's system prompt says so and names the PR file.
+  Before each session it writes the PR as GitHub has it to `.run-feature/pr.json` at the worktree's root, kept out of git through the repo's `info/exclude`, with `number` null until the PR is opened.
+  After the session's push it applies what the session wrote there: it opens the PR as a draft from `title` and `body`, rewrites the body, sets the `attention:` labels, creating any that are missing, and marks the PR ready once `draft` is false; other labels are ignored.
+  It calls `gh` with the App's token as `GH_TOKEN`, or with the shell's own gh login when no minter is installed.
+  A PR file that is a link or not JSON, or a `gh` call that fails, halts as `pr refused`.
 - Writes a missing spec or slices file through a headless write-spec or write-slices session and commits it to the slices branch before the loop starts.
 - Seeds a project that has no committed `.claude/settings.json` with a default Bash allowlist and commits it before any session, a baseline for the attended sessions a human runs in a kept worktree.
 - Runs each slice attempt as a fresh `/implement-slice spec/features/<slug>/` session with full access: the worktree is dedicated and the loop is already trusted to commit and push, so an allowlist would only stall it.
@@ -38,7 +61,7 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - Between iterations it decides from `git log` trailers and `slices.json` alone, never from session stdout.
 - A slice with only `done.manual` items is `afk`: it commits as done, so its dependents and the close carry on, and its checks wait for a person in the ready PR's `## Before you merge`.
 - After the last slice it runs one more session so implement-slice closes the branch and marks the PR ready.
-- It trusts that close only after checking it: a commit with a `Manual-Checks:` trailer when an `afk` slice has `done.manual` items, and the PR out of draft through `gh`, the one thing read from outside git.
+- It trusts that close only after checking it: a commit with a `Manual-Checks:` trailer when an `afk` slice has `done.manual` items, and the PR out of draft, the one thing read from outside git.
   With no `origin`, the trailer check runs alone.
   Either failing is a `close incomplete` halt.
   A close whose newest `Address review` commit carries a `Known-Failure:` trailer is a `known failure` halt instead: a proven bug it could not fix, left in a draft PR for a person.

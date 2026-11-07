@@ -2,11 +2,13 @@
 // run-feature: loop implement-slice sessions in a dedicated worktree until
 // every slice of a feature is committed and the branch is closed.
 // State is read only from git trailers and slices.json, never from harness stdout.
-// The one exception is closeGap, which asks gh whether the PR left draft.
+// The one exception is closeGap, which asks GitHub whether the PR left draft.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -21,6 +23,24 @@ import { fileURLToPath } from "node:url";
 
 // One kick never starts a session beyond this ceiling.
 const MAX_ITERATIONS = 12;
+
+// The agent account stops starting sessions here, so 5% of its week is left
+// for a person to log in to that account and debug a stuck run.
+const AGENT_WEEKLY_RESERVE = 0.95;
+const RESERVE_PERCENT = `${AGENT_WEEKLY_RESERVE * 100}%`;
+// A timer can fire a moment early, which would read the reset as still ahead.
+const RESET_MARGIN_MS = 1000;
+
+// Prints a 1-hour GitHub App token for the <owner>/<repo> it is given.
+const TOKEN_MINTER = "github-app-token";
+
+// The PR as sessions see it, at the worktree's root and kept out of git: no
+// session holds a GitHub credential, so each reads the PR here and writes the
+// changes it wants, which the runner applies once it has pushed the session's work.
+const PR_DIR = ".run-feature";
+const PR_FILE = `${PR_DIR}/pr.json`;
+// The only labels a session may set, as implement-slice and pr-brief touch no others.
+const PR_LABEL_PREFIX = "attention: ";
 
 // The Bash allowlist seeded into a project that has no committed Claude
 // settings yet. The headless sessions skip the permission system entirely;
@@ -105,16 +125,20 @@ function gitOk(repo, args) {
 }
 
 function parseArgs(argv) {
-  const args = { repo: process.cwd(), slug: null };
+  const args = { repo: process.cwd(), slug: null, onHost: false, agentAccount: false };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--repo") {
       args.repo = argv[++i] ?? fail("--repo needs a path");
+    } else if (argv[i] === "--on-host") {
+      args.onHost = true;
+    } else if (argv[i] === "--agent-account") {
+      args.agentAccount = true;
     } else {
       rest.push(argv[i]);
     }
   }
-  if (rest.length !== 1) fail("usage: node run.mjs <slug> [--repo <path>]");
+  if (rest.length !== 1) fail("usage: node run.mjs <slug> [--repo <path>] [--on-host] [--agent-account]");
   args.slug = rest[0];
   if (!/^[a-z0-9-]+$/.test(args.slug)) fail(`slug "${args.slug}" is not lowercase kebab-case`);
   args.repo = path.resolve(args.repo);
@@ -250,24 +274,244 @@ function readSlices(worktree, slug) {
   return parsed.slices;
 }
 
-// Commit one file to the slices branch, pushed when a remote exists, so the
-// worktree stays clean. A session may already have committed the file itself,
-// so a clean index just skips to the push.
-function commitFile(worktree, relative, message, hasOrigin) {
+// Commit one file to the slices branch, then push it, so the worktree stays
+// clean. A session may already have committed the file itself, so a clean
+// index just skips to the push.
+function commitFile(worktree, relative, message, push) {
   git(worktree, ["add", relative]);
   if (!gitOk(worktree, ["diff", "--cached", "--quiet"])) {
     gitOrHalt(worktree, ["commit", "--quiet", "-m", message], "commit refused", `committing ${relative}`);
   }
-  if (hasOrigin) gitOrHalt(worktree, ["push", "--quiet", "origin", "HEAD"], "push refused", `pushing ${relative}`);
+  push();
 }
 
 // A hook or remote can refuse what the runner commits; that is a halt naming
 // git's own reason, never a stack trace.
-function gitOrHalt(worktree, args, state, doing) {
-  const result = spawnSync("git", ["-C", worktree, ...args], { encoding: "utf8" });
+function gitOrHalt(dir, args, state, doing, { env, worktree = dir } = {}) {
+  const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", env });
   if (result.status === 0) return;
   const cause = (result.stderr || result.stdout || "").trim() || `git exited with ${result.status}`;
   halt(state, `git refused ${doing}: ${cause}; fix it in the worktree, then re-kick`, worktree);
+}
+
+// A bare clone only the host writes, the one place the slices branch is pushed
+// from. Bare, so nothing ever checks a file out and runs a filter on it.
+function hostClone(repo, slug) {
+  const common = git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const clone = path.join(common, "run-feature", `${slug}.git`);
+  if (!existsSync(clone)) git(repo, ["init", "--bare", "--quiet", "--template=", clone]);
+  return clone;
+}
+
+// The App's token, or null when no minter is installed; a minter that fails is
+// a halt, never a push with some other credential.
+function mintToken(repository, worktree, state) {
+  const result = spawnSync(TOKEN_MINTER, [repository], { encoding: "utf8" });
+  if (result.error?.code === "ENOENT") return null;
+  const token = result.stdout?.trim() ?? "";
+  if (result.status !== 0 || token === "") {
+    const cause = result.error?.message || result.stderr?.trim() || `it exited with ${result.status}`;
+    halt(state, `${TOKEN_MINTER} gave no token for ${repository}: ${cause}; fix the minter, then re-kick`, worktree);
+  }
+  return token;
+}
+
+let warnedNoMinter = false;
+
+// Pushes the slices branch as the session's tree holds it, without running git
+// in that tree: the host clone fetches from it, which runs none of its hooks,
+// config or filters, and pushes with every hook off.
+function publish({ worktree, clone, slug, origin }) {
+  const ref = `refs/heads/slices/${slug}`;
+  const hostArgs = [`--git-dir=${clone}`, "-c", "core.hooksPath=/dev/null"];
+  const hostGit = (args, doing, env) =>
+    gitOrHalt(clone, [...hostArgs, ...args], "push refused", doing, { env, worktree });
+  // Only a broken worktree or a lost branch fails this, so it is no push refusal.
+  const fetch = [...hostArgs, "fetch", "--quiet", "--no-tags", worktree, `+${ref}:${ref}`];
+  const fetched = spawnSync("git", ["-C", clone, ...fetch], { encoding: "utf8" });
+  if (fetched.status !== 0) fail(`could not fetch slices/${slug} from ${worktree}: ${fetched.stderr.trim()}`);
+  const app = appRemote(origin);
+  const token = mintToken(app.repository, worktree, "push refused");
+  if (token === null) {
+    if (!warnedNoMinter) log(`push: no ${TOKEN_MINTER} on PATH, so pushes use this shell's own git credential`);
+    warnedNoMinter = true;
+    hostGit(["push", "--quiet", origin, `${ref}:${ref}`], `pushing slices/${slug}`);
+    return;
+  }
+  // The token goes in through the environment, so it never shows in a process
+  // list or lands in a config file. The user's and the system's git config
+  // files stay out, so no insteadOf of theirs rewrites the push to SSH and no
+  // stored login answers in the App's place.
+  const header = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
+  hostGit(["push", "--quiet", app.url, `${ref}:${ref}`], `pushing slices/${slug} with the App token`, {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.extraHeader",
+    GIT_CONFIG_VALUE_0: header,
+  });
+}
+
+// Origin's push address as configured, before any insteadOf rewrites it.
+function originUrl(repo) {
+  const pushUrl = spawnSync("git", ["-C", repo, "config", "--get", "remote.origin.pushurl"], { encoding: "utf8" });
+  return pushUrl.status === 0 ? pushUrl.stdout.trim() : git(repo, ["config", "--get", "remote.origin.url"]);
+}
+
+// The <owner>/<repo> the minter is asked for, and where the App's token is
+// pushed: an App token works only over HTTPS, so a GitHub SSH remote is pushed
+// to at its HTTPS address.
+function appRemote(url) {
+  const ssh = url.match(/^(?:ssh:\/\/)?git@github\.com[:/](.+?)(?:\.git)?\/?$/);
+  if (ssh) return { repository: ssh[1], url: `https://github.com/${ssh[1]}.git` };
+  return { repository: url.replace(/\.git\/?$/, "").split(/[/:]/).slice(-2).join("/"), url };
+}
+
+// One gh call on the slices branch's PR, as the App when a minter is installed
+// and with the shell's own gh login otherwise. It runs outside the worktree, so
+// no git that gh starts reads the session's config.
+function github(remote, token, args, doing, input) {
+  const env = token === null ? process.env : { ...process.env, GH_TOKEN: token };
+  const result = spawnSync("gh", [...args, "--repo", remote.repository], {
+    cwd: os.tmpdir(),
+    encoding: "utf8",
+    env,
+    input,
+  });
+  if (result.status === 0) return result.stdout;
+  const cause = result.error?.message || (result.stderr || result.stdout || "").trim() || `gh exited with ${result.status}`;
+  halt("pr refused", `gh refused ${doing}: ${cause}; fix it, then re-kick`, remote.worktree);
+}
+
+function prToken(remote) {
+  return mintToken(remote.repository, remote.worktree, "pr refused");
+}
+
+// A gh call that prints a JSON list; anything else halts rather than guessing.
+function githubList(remote, token, args, doing) {
+  let list;
+  try {
+    list = JSON.parse(github(remote, token, args, doing));
+  } catch {
+    list = undefined;
+  }
+  if (!Array.isArray(list)) halt("pr refused", `gh gave no list ${doing}; fix it, then re-kick`, remote.worktree);
+  return list;
+}
+
+// The open PR from slices/<slug>, or null when none is open.
+function findPr(remote, token) {
+  const [pr] = githubList(
+    remote,
+    token,
+    ["pr", "list", "--head", `slices/${remote.slug}`, "--state", "open", "--limit", "1", "--json", "number,url,title,body,labels,isDraft"],
+    `reading the PR for slices/${remote.slug}`,
+  );
+  return pr ? { ...pr, labels: pr.labels.map((label) => label.name) } : null;
+}
+
+// Removes what stands at the PR file's place before the runner writes there, so
+// a link a session left cannot point the write at a file outside the worktree;
+// a link itself is removed, never what it points at.
+function clearPrFile(worktree) {
+  rmSync(path.join(worktree, PR_DIR), { recursive: true, force: true });
+}
+
+// Hands the next session the PR as GitHub has it, with the repository and base
+// a new PR needs; number and url stay null until a session opens one.
+function writePrFile(remote) {
+  const pr = findPr(remote, prToken(remote));
+  clearPrFile(remote.worktree);
+  mkdirSync(path.join(remote.worktree, PR_DIR), { recursive: true });
+  const file = {
+    repository: remote.repository,
+    base: remote.base,
+    head: `slices/${remote.slug}`,
+    number: pr?.number ?? null,
+    url: pr?.url ?? null,
+    title: pr?.title ?? null,
+    body: pr?.body ?? null,
+    labels: pr?.labels ?? [],
+    draft: pr?.isDraft ?? true,
+  };
+  writeFileSync(path.join(remote.worktree, PR_FILE), JSON.stringify(file, null, 2) + "\n", { flag: "wx" });
+}
+
+// What the session wants of the PR, read only when the file is a plain file
+// inside the worktree, so a link cannot have the runner post a host file.
+function readPrFile(worktree) {
+  const file = path.join(worktree, PR_FILE);
+  // lstat, as existsSync would read a dangling link as no file at all.
+  if (lstatSync(file, { throwIfNoEntry: false }) === undefined) return null;
+  if (!existsSync(file)) {
+    halt("pr refused", `${PR_FILE} in the worktree is not a plain file; remove it, then re-kick`, worktree);
+  }
+  const expected = path.join(realpathSync(worktree), PR_FILE);
+  if (realpathSync(file) !== expected || !lstatSync(file).isFile()) {
+    halt("pr refused", `${PR_FILE} in the worktree is not a plain file; remove it, then re-kick`, worktree);
+  }
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    halt("pr refused", `${PR_FILE} in the worktree is not valid JSON: ${error.message}; fix it, then re-kick`, worktree);
+  }
+}
+
+// Applies the session's PR file after its work is pushed: opens the PR as a
+// draft, rewrites its body, sets its attention labels and marks it ready.
+function applyPr(remote) {
+  const wanted = readPrFile(remote.worktree);
+  if (wanted === null) return;
+  const token = prToken(remote);
+  let pr = findPr(remote, token);
+  if (pr === null) {
+    if (typeof wanted.title !== "string" || wanted.title === "") return;
+    github(
+      remote,
+      token,
+      ["pr", "create", "--draft", "--base", remote.base, "--head", `slices/${remote.slug}`, "--title", wanted.title, "--body-file", "-"],
+      `opening the PR for slices/${remote.slug}`,
+      wanted.body ?? "",
+    );
+    pr = findPr(remote, token);
+    if (pr === null) halt("pr refused", `gh opened no PR for slices/${remote.slug}; re-kick`, remote.worktree);
+    log(`pr: opened ${pr.url} as a draft`);
+  }
+  if (typeof wanted.body === "string" && wanted.body !== pr.body) {
+    github(remote, token, ["pr", "edit", String(pr.number), "--body-file", "-"], `editing the PR body`, wanted.body);
+  }
+  if (Array.isArray(wanted.labels)) {
+    const attention = (labels) => labels.filter((label) => typeof label === "string" && label.startsWith(PR_LABEL_PREFIX));
+    const add = attention(wanted.labels).filter((label) => !pr.labels.includes(label));
+    const remove = attention(pr.labels).filter((label) => !wanted.labels.includes(label));
+    if (add.length > 0) {
+      const existing = githubList(remote, token, ["label", "list", "--limit", "1000", "--json", "name"], "listing labels");
+      for (const label of add.filter((name) => !existing.some((entry) => entry.name === name))) {
+        github(remote, token, ["label", "create", label], `creating the label ${label}`);
+      }
+    }
+    if (add.length > 0 || remove.length > 0) {
+      const flags = [...add.flatMap((label) => ["--add-label", label]), ...remove.flatMap((label) => ["--remove-label", label])];
+      github(remote, token, ["pr", "edit", String(pr.number), ...flags], "setting the PR's attention label");
+    }
+  }
+  if (wanted.draft === false && pr.isDraft) {
+    github(remote, token, ["pr", "ready", String(pr.number)], "marking the PR ready");
+    log(`pr: marked ${pr.url} ready`);
+  }
+}
+
+// Keeps the PR file out of every checkout's status, so it is never committed
+// and a tree holding it still reads clean.
+function excludePrFile(repo) {
+  const exclude = git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]);
+  const line = `/${PR_DIR}/`;
+  const current = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
+  if (current.split("\n").includes(line)) return;
+  mkdirSync(path.dirname(exclude), { recursive: true });
+  appendFileSync(exclude, `${current === "" || current.endsWith("\n") ? "" : "\n"}${line}\n`);
 }
 
 // The lockfile names the package manager, and its frozen install is the one
@@ -304,13 +548,13 @@ async function installDependencies(worktree) {
 
 // Seed a project that has no committed Claude settings with a default Bash
 // allowlist, committed like the pre-steps so the worktree stays clean.
-function ensureSettings(worktree, hasOrigin) {
+function ensureSettings(worktree, push) {
   const relative = path.join(".claude", "settings.json");
   const target = path.join(worktree, relative);
   if (existsSync(target)) return;
   mkdirSync(path.dirname(target), { recursive: true });
   writeFileSync(target, JSON.stringify(DEFAULT_SETTINGS, null, 2) + "\n");
-  commitFile(worktree, relative, "chore: seed the default Claude settings allowlist", hasOrigin);
+  commitFile(worktree, relative, "chore: seed the default Claude settings allowlist", push);
   log(`seeded ${relative} with the default Bash allowlist`);
 }
 
@@ -363,7 +607,7 @@ function knownFailures(worktree, base) {
 // finishing, so "complete" is only reported on what it actually left behind.
 // A hitl slice's manual items were confirmed through sign-off, so only the
 // other slices' items need the checklist.
-function closeGap({ worktree, base, slices, slug, hasOrigin }) {
+function closeGap({ worktree, base, slices, remote }) {
   const needsChecks = slices.some(
     (slice) => slice.autonomy !== "hitl" && slice.done?.manual?.length > 0,
   );
@@ -375,19 +619,10 @@ function closeGap({ worktree, base, slices, slug, hasOrigin }) {
     ]);
     if (trailers === "") return "no commit with a Manual-Checks trailer, so the PR has no checklist";
   }
-  if (!hasOrigin) return null;
-  const view = spawnSync("gh", ["pr", "view", `slices/${slug}`, "--json", "isDraft"], {
-    cwd: worktree,
-    encoding: "utf8",
-  });
-  let isDraft;
-  try {
-    ({ isDraft } = JSON.parse(view.stdout));
-  } catch {
-    isDraft = undefined;
-  }
-  if (typeof isDraft !== "boolean") return `could not confirm the PR state through gh for slices/${slug}`;
-  return isDraft ? "the PR is still a draft" : null;
+  if (remote === null) return null;
+  const pr = findPr(remote, prToken(remote));
+  if (pr === null) return `no open PR for slices/${remote.slug}`;
+  return pr.isDraft ? "the PR is still a draft" : null;
 }
 
 function quoteArg(arg) {
@@ -402,14 +637,25 @@ const HEADLESS_NOTE =
   "Never end the turn asking a question or waiting for input; " +
   "settle every open choice with the default you would otherwise propose, note it, and finish the task.";
 
+// Appended after the headless note: the session pushes nothing and touches the
+// PR only through the PR file, which the runner applies as the GitHub App.
+const PR_NOTE =
+  "run-feature owns this branch's pushes and pull request, so never run `git push` or `gh`: " +
+  `after the session the runner pushes HEAD, then applies \`${PR_FILE}\` at the worktree root, which git ignores. ` +
+  "That file holds the PR: `repository` (owner/name), `base`, `head`, `number` and `url` (null until it is opened), " +
+  "`title`, `body`, `labels` and `draft`. Read the PR from it, and change the PR by writing the file back: " +
+  "set `title`, `body` and `draft: true` to open it, rewrite `body` to edit it, list its `attention:` labels in `labels`, " +
+  "and set `draft` to false to mark it ready. The PR's head is HEAD once the runner has pushed.";
+const LOCAL_NOTE = "This run has no remote, so never run `git push` or `gh`; there is no PR.";
+
 const DAEMON_SESSION = fileURLToPath(new URL("./daemon-session.mjs", import.meta.url));
 const DAEMON_LOST = 1;
 const DAEMON_UNAVAILABLE = 3;
 const DAEMON_ENDED_BY_SOMEONE_ELSE = 4;
 
-// What the Runs page knows of this kick: the run it shows and the end state recorded
-// when the process exits.
-const board = { runId: "", outcome: "failed", detail: undefined, lastSteps: "" };
+// What the Runs page knows of this kick: the run it shows, the call that opens it, and
+// the end state recorded when the process exits.
+const board = { runId: "", open: [], outcome: "failed", detail: undefined, lastSteps: "" };
 
 function daemonCall(...args) {
   return spawnSync(process.execPath, [DAEMON_SESSION, ...args], {
@@ -431,14 +677,12 @@ function waitFor(command, args, options) {
 // The key makes every kick of this feature in this repo reopen one run, so its
 // cost and time stay whole. The name is the slug, which the card shows.
 function startRun(repo, slug) {
-  const key = `${realpathSync(repo)}:${slug}`;
-  board.runId = daemonCall("run-start", slug, `Run the ${slug} feature to a ready PR`, key).stdout?.trim() ?? "";
+  board.open = ["run-start", slug, `Run the ${slug} feature to a ready PR`, `${realpathSync(repo)}:${slug}`];
+  board.runId = daemonCall(...board.open).stdout?.trim() ?? "";
   if (board.runId === "") return;
   process.on("exit", () => {
     // No session outlives the kick on purpose, so no step should read as running.
-    if (board.lastSteps !== "") {
-      reportSteps(JSON.parse(board.lastSteps).map((step) => (step.state === "running" ? { ...step, state: "pending" } : step)));
-    }
+    reportSteps(stepsAtRest());
     daemonCall("run-end", board.runId, board.outcome, board.detail ?? "");
   });
   for (const signal of ["SIGTERM", "SIGINT"]) {
@@ -462,10 +706,16 @@ function planSteps(slices, { done, pending }, { running, failed } = {}) {
   return slices.map((slice) => ({ id: slice.id, title: slice.title ?? slice.id, state: state(slice) }));
 }
 
+// The plan last sent, with no step running, for while no session is.
+function stepsAtRest() {
+  if (board.lastSteps === "") return [];
+  return JSON.parse(board.lastSteps).map((step) => (step.state === "running" ? { ...step, state: "pending" } : step));
+}
+
 // The daemon takes the plan whole, so only a change is worth a call.
 function reportSteps(steps) {
   const sent = JSON.stringify(steps);
-  if (board.runId === "" || sent === board.lastSteps) return;
+  if (board.runId === "" || steps.length === 0 || sent === board.lastSteps) return;
   board.lastSteps = sent;
   daemonCall("run-steps", board.runId, sent);
 }
@@ -475,9 +725,63 @@ function settleSession(sessionId, outcome, detail) {
   daemonCall("run-settle", board.runId, sessionId, outcome, detail ?? "");
 }
 
+// The daemon's latest rate-limit reading, or undefined when no daemon has one.
+function readQuota() {
+  const printed = daemonCall("quota").stdout?.trim() ?? "";
+  if (printed === "") return undefined;
+  try {
+    return JSON.parse(printed);
+  } catch {
+    return undefined;
+  }
+}
+
+// What holds the agent account's sessions back, or null. The daemon only learns
+// a new reading from a session, so a reading whose reset has passed is stale.
+function quotaHold(reading) {
+  if (reading === undefined) return null;
+  const limited = reading.status === "rejected";
+  const reserved = reading.window === "seven_day" && (reading.utilization ?? 0) >= AGENT_WEEKLY_RESERVE;
+  if (!limited && !reserved) return null;
+  const resetsAt = reading.resetsAt === undefined ? undefined : Date.parse(reading.resetsAt);
+  if (resetsAt !== undefined && resetsAt <= Date.now()) return null;
+  return {
+    what: limited ? `the ${reading.window ?? "usage"} limit` : `the agent account's ${RESERVE_PERCENT} weekly reserve`,
+    limited,
+    resetsAt,
+  };
+}
+
+// Starts no session while the agent account is held back: the run reads waiting
+// with the reset time, one banner fires, and the run reopens once it resets.
+async function waitOutQuota(worktree) {
+  for (let hold = quotaHold(readQuota()); hold !== null; hold = quotaHold(readQuota())) {
+    if (hold.resetsAt === undefined) {
+      halt("quota reached", `${hold.what} was reached with no reset time; re-kick once it resets`, worktree, {
+        outcome: "waiting",
+      });
+    }
+    const resetTime = new Date(hold.resetsAt).toISOString();
+    const detail = `Waiting for ${hold.what} to reset at ${resetTime}.`;
+    log(`quota: ${detail}`);
+    const plan = board.lastSteps;
+    if (board.runId !== "") {
+      reportSteps(stepsAtRest());
+      daemonCall("run-end", board.runId, "waiting", detail);
+    }
+    notify("waiting for quota");
+    await new Promise((resolve) => setTimeout(resolve, hold.resetsAt - Date.now() + RESET_MARGIN_MS));
+    log(`quota: ${hold.what} reset, resuming`);
+    if (board.runId !== "") {
+      daemonCall(...board.open);
+      if (plan !== "") reportSteps(JSON.parse(plan));
+    }
+  }
+}
+
 // Through the local agents-hq daemon when one can take it, so it shows on the Runs page and
 // can be stopped there; otherwise directly, outside agents-hq, with no session id to return.
-async function runHarnessSession({ worktree, prompt, label, name, task, parent, stepId }) {
+async function runHarnessSession({ worktree, prompt, note, label, name, task, parent, stepId }) {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
   const resultFile = path.join(scratch, "session-id");
   const viaDaemon = await waitFor(
@@ -487,7 +791,7 @@ async function runHarnessSession({ worktree, prompt, label, name, task, parent, 
       "session",
       worktree,
       prompt,
-      HEADLESS_NOTE,
+      note,
       name,
       task,
       resultFile,
@@ -518,7 +822,7 @@ async function runHarnessSession({ worktree, prompt, label, name, task, parent, 
     return sessionId;
   }
   log(`${label}: running outside agents-hq, as no agents-hq daemon can take it`);
-  await runClaudeSession({ worktree, prompt, label });
+  await runClaudeSession({ worktree, prompt, note, label });
   return undefined;
 }
 
@@ -527,8 +831,8 @@ async function runHarnessSession({ worktree, prompt, label, name, task, parent, 
 // push, so sessions skip the permission system instead of stalling behind an
 // allowlist. stdout and stderr stream straight to the terminal and are never
 // captured.
-async function runClaudeSession({ worktree, prompt, label }) {
-  const args = ["-p", prompt, "--dangerously-skip-permissions", "--append-system-prompt", HEADLESS_NOTE];
+async function runClaudeSession({ worktree, prompt, note, label }) {
+  const args = ["-p", prompt, "--dangerously-skip-permissions", "--append-system-prompt", note];
   log(`${label}: claude ${args.map(quoteArg).join(" ")}`);
   const result = await waitFor("claude", args, {
     cwd: worktree,
@@ -548,7 +852,7 @@ function hasVerifySkill(worktree) {
 
 // One headless pre-step: have a writing skill produce a missing spec file,
 // then commit it, so the loop starts from committed state as always.
-async function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
+async function runPreStep({ worktree, slug, file, prompt, session, push }) {
   const relative = path.join("spec", "features", slug, file);
   const target = path.join(worktree, relative);
   if (existsSync(target)) return;
@@ -566,12 +870,22 @@ async function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) 
       worktree,
     );
   }
-  commitFile(worktree, relative, `spec: write ${slug} ${file} headlessly`, hasOrigin);
+  commitFile(worktree, relative, `spec: write ${slug} ${file} headlessly`, push);
   log(`pre-step committed ${relative}`);
 }
 
 async function main() {
-  const { repo, slug } = parseArgs(process.argv.slice(2));
+  const { repo, slug, onHost, agentAccount } = parseArgs(process.argv.slice(2));
+  // No session starts in a container yet.
+  if (!onHost) {
+    fail(
+      "refusing to start sessions outside a container: they would run on this host with full access, beside your credentials; pass --on-host to run them here anyway",
+    );
+  }
+  log("on host: --on-host given, so every session runs outside a container, with full access");
+  if (agentAccount) {
+    log(`agent account: --agent-account given, so no session starts at ${RESERVE_PERCENT} of the week or at a usage limit until it resets`);
+  }
   if (!gitOk(repo, ["rev-parse", "--git-dir"])) fail(`${repo} is not a git repository`);
 
   const branch = defaultBranch(repo);
@@ -610,9 +924,29 @@ async function main() {
     );
   }
 
-  ensureSettings(worktree, hasOrigin);
+  const remote = hasOrigin
+    ? (() => {
+        const origin = originUrl(repo);
+        return { worktree, slug, base: branch, clone: hostClone(repo, slug), origin, repository: appRemote(origin).repository };
+      })()
+    : null;
+  if (remote) excludePrFile(repo);
+  const note = `${HEADLESS_NOTE} ${remote ? PR_NOTE : LOCAL_NOTE}`;
+  const push = () => {
+    if (remote) publish(remote);
+  };
+  ensureSettings(worktree, push);
 
-  const session = (prompt, label, member) => runHarnessSession({ worktree, prompt, label, ...member });
+  // A session never pushes or reaches GitHub for the run: whatever it committed
+  // is published here, and then the PR it asked for.
+  const session = async (prompt, label, member) => {
+    if (agentAccount) await waitOutQuota(worktree);
+    if (remote) writePrFile(remote);
+    const sessionId = await runHarnessSession({ worktree, prompt, note, label, ...member });
+    push();
+    if (remote) applyPr(remote);
+    return sessionId;
+  };
 
   const featureDir = path.join(worktree, "spec", "features", slug);
   if (!existsSync(path.join(featureDir, "spec.md")) && !existsSync(path.join(featureDir, "decisions.md"))) {
@@ -624,7 +958,7 @@ async function main() {
     file: "spec.md",
     prompt: `/write-spec spec/features/${slug}/decisions.md`,
     session,
-    hasOrigin,
+    push,
   });
   await runPreStep({
     worktree,
@@ -632,7 +966,7 @@ async function main() {
     file: "slices.json",
     prompt: `/write-slices spec/features/${slug}/spec.md`,
     session,
-    hasOrigin,
+    push,
   });
 
   const slices = readSlices(worktree, slug);
@@ -644,14 +978,13 @@ async function main() {
   let lastSession;
   let failingSlice = null;
   for (;;) {
-    if (hasOrigin) git(worktree, ["fetch", "origin", "--quiet"]);
     const states = sliceStates(worktree, base, slices);
     const allDone = slices.every((slice) => states.done.has(slice.id));
 
     if (allDone && closeRan) {
       const known = knownFailures(worktree, base);
       // A known failure leaves the PR a draft on purpose, so only the checklist is checked.
-      const gap = closeGap({ worktree, base, slices, slug, hasOrigin: hasOrigin && known.length === 0 });
+      const gap = closeGap({ worktree, base, slices, remote: known.length === 0 ? remote : null });
       settleSession(closeSession, gap ? "failed" : "completed", gap);
       if (gap) {
         halt("close incomplete", `the close session did not finish: ${gap}; fix it or re-kick`, worktree);
@@ -664,7 +997,9 @@ async function main() {
           { outcome: "waiting" },
         );
       }
+      clearPrFile(worktree);
       removeWorktree(repo, worktree);
+      if (remote) rmSync(remote.clone, { recursive: true, force: true });
       board.outcome = "completed";
       board.detail = undefined;
       notify("complete");
@@ -718,6 +1053,14 @@ async function main() {
     // done still counts even though the combined count stays constant.
     const after = sliceStates(worktree, base, slices);
     const progressed = after.done.size > states.done.size || after.pending.size > states.pending.size;
+    // The reserve only holds back the next session; a limit is what cuts one short.
+    const cutShort = !progressed && agentAccount ? quotaHold(readQuota()) : null;
+    if (cutShort?.limited && git(worktree, ["status", "--porcelain"]) === "") {
+      // A usage limit is no failed attempt: the next session waits it out instead.
+      settleSession(sessionId, "stopped", `Cut short by ${cutShort.what}.`);
+      log(`iteration ${iteration} was cut short by ${cutShort.what}; not counted as a failure`);
+      continue;
+    }
     settleSession(
       sessionId,
       progressed ? "completed" : "failed",
