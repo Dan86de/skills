@@ -1,5 +1,20 @@
 # dan86de-skills
 
+## 0.16.4
+
+### Patch Changes
+
+- [#50](https://github.com/Dan86de/skills/pull/50) [`663ba44`](https://github.com/Dan86de/skills/commit/663ba4431b7e1334bbb88348703d112056386859) Thanks [@Dan86de](https://github.com/Dan86de)! - `run-feature` takes `--agent-account`, which starts no session at 95% of the week or at a usage limit, shows the run `waiting` with the reset time, and resumes by itself once it resets.
+
+- [#50](https://github.com/Dan86de/skills/pull/50) [`9d7637b`](https://github.com/Dan86de/skills/commit/9d7637b448b129a4d1e6fdd965b1d68b2f9d1b6b) Thanks [@Dan86de](https://github.com/Dan86de)! - `run-feature` owns the slices branch's PR: no session runs `gh` or `git push`.
+  Each session reads the PR from `.run-feature/pr.json` and writes the changes it wants there, and the runner opens the PR as a draft, writes its body and `attention:` labels and marks it ready with the GitHub App's token.
+  `implement-slice` and `pr-brief` use that file when the system prompt names it, and `run-feature/scripts/github-app-token.mjs` mints the App's 1-hour token for one repository.
+
+- [#50](https://github.com/Dan86de/skills/pull/50) [`d613243`](https://github.com/Dan86de/skills/commit/d61324390efbe8575e7fcf4184342a6fe92ff264) Thanks [@Dan86de](https://github.com/Dan86de)! - `run-feature` pushes the slices branch itself after every session, from a bare clone only the host writes, with hooks off and a 1-hour GitHub App token from `github-app-token` on `PATH`, so nothing a session writes in its tree runs during the fetch or the push.
+  It no longer fetches origin into the worktree between sessions.
+
+- [#50](https://github.com/Dan86de/skills/pull/50) [`35a82bb`](https://github.com/Dan86de/skills/commit/35a82bb31e2cfc25447fe4f2c94df4d35e08cf94) Thanks [@Dan86de](https://github.com/Dan86de)! - `run-feature` refuses to start sessions unless kicked with `--on-host`, since every session would run on the host with full access, beside the shell's credentials, and logs the flag when given.
+
 ## 0.16.3
 
 ### Patch Changes
