@@ -4,6 +4,8 @@ description: Pressure-test a plan in rounds until every decision is settled, end
 ---
 
 Interview the user relentlessly until every load-bearing decision is settled, then emit a decision record and stop.
+Two things break shared understanding: decisions still open, and the same words meaning different pictures.
+Rounds settle the first; playing your picture back every round exposes the second.
 
 Map the subject as a **design tree**: every decision branches into the decisions that hang off it.
 The **frontier** is every decision whose prerequisites are already settled.
@@ -17,7 +19,8 @@ Report it in three or four lines, then go straight to round zero.
 
 ## 2. Round zero
 
-Three fixed questions, asked once, never revisited:
+First ask the user to describe the subject in their own words, as messily as they like, and structure nothing until they have.
+Then three fixed questions, asked once, never revisited:
 
 1. **The pain**: what observably goes wrong today, who hits it, how often, and how you know.
 2. **The wedge**: the smallest version still worth shipping.
@@ -30,24 +33,37 @@ After round zero, everything is how, not whether.
 
 ## 3. Rounds
 
-Ask the whole frontier, numbered, each with your recommended answer:
+Open every round with your picture so far, then ask the whole frontier, numbered:
 
 ```
+**Where I am**
+- <3-5 beliefs, each one the user could mark wrong, not a recap>
+- <a term coined this round>: <one-line definition>
+- ⚠️ Shakiest: <the belief you inferred rather than heard>
+
+**Decided for you** (say if not): <cheap-to-undo calls, each with a short why>
+
 ❓ **Q1** - **<title>**: <the question, as long as it needs to be, options included>
 
 ➡️ <your recommended answer, and why>
 
 ---
 
-❓ **Q2** - **<title>**: <the question>
-
-➡️ <your recommended answer, and why>
+❓ **Q2** - **<title>** 🎯 your view first: <the question, no recommendation>
 ```
+
+Sort each decision by what it costs to undo:
+
+- **Cheap to undo**: decide it yourself and list it under "Decided for you".
+- **Hard to undo, and the user's view shapes it**: mark it 🎯 and withhold your recommendation until they answer, at most two per round.
+- **Everything else**: ask it with your recommendation.
+
+When a decision changes behaviour, ask it as a scenario: "Given <input>, I expect <exact output>. Correct me."
 
 Then wait for answers, recompute the frontier, and ask the next round.
 
 Facts are yours to find: dispatch a sub-agent per fact if your harness can, otherwise look yourself, and only questions downstream of a fact in flight wait.
-Decisions are the user's: a recommendation is never an answer.
+Outside "Decided for you", a recommendation is never an answer.
 For a number the user cannot feel, ask for the sensation or a reference and propose the number yourself.
 
 Once the tree holds eight or more decisions, or the user asks to see it, read [references/tree.md](references/tree.md) and keep a picture of it.
@@ -58,7 +74,7 @@ Before declaring the frontier empty, check these four:
 
 - **Not doing**: named, so it cannot creep back in.
 - **Accepted breakage**: every plan has some.
-- **Done means**: what a machine can check, and what a person has to look at.
+- **Done means**: the confirmed scenarios, sorted into what a machine can check and what a person has to look at.
 - **Reversibility**: the cost to undo, and the signal that would trigger it.
 
 Anything it surfaces goes back on the frontier, then sweep again.
@@ -66,7 +82,7 @@ Anything it surfaces goes back on the frontier, then sweep again.
 ## 5. The decision record
 
 The session ends when the frontier is empty, the sweep is clean, and the user confirms a shared understanding.
-Emit it into the conversation and write it to `spec/features/<slug>/decisions.md`, where `<slug>` is a short kebab-case name for the subject that you confirm with the user.
+Emit it into the conversation, write it to `spec/features/<slug>/decisions.md`, and add its terms to `spec/glossary.md`, rewriting a term already there instead of defining it twice, where `<slug>` is a short kebab-case name for the subject that you confirm with the user.
 A cut is written there too, so the reason survives.
 If you kept a picture, render it once more with every node settled, not doing, or cut, and give its path under the record.
 
@@ -79,6 +95,10 @@ If you kept a picture, render it once more with every node settled, not doing, o
 
 ### Settled
 - **<decision>**: <what was chosen>. Rejected: <alternative> because <reason>.
+- **<decision>** (decided for you): <what was chosen>, and why it is cheap to undo.
+
+### Terms
+- **<term>**: <one-line definition>
 
 ### Found during recon
 - <fact, with file:line or source>
