@@ -1,8 +1,8 @@
 // Seam tests for run.mjs: drive the runner's process boundary against a
 // throwaway target repo with a stub harness and gh on PATH.
-// Covers slices S1 through S6 of spec/features/run-feature/spec.md, and the
-// refusal to start sessions on the host without --on-host, and the agent
-// account's quota brake.
+// Covers slices S1 through S6 of spec/features/run-feature/spec.md, the
+// refusal to start sessions on the host without --on-host, the agent
+// account's quota brake, and the push from a host-owned clone with an App token.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -11,8 +11,11 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -123,6 +126,18 @@ const LOCAL_ONLY_STUB = CLOSE_STAYS_DRAFT_STUB.replaceAll("origin/main..HEAD", "
   'git("push", "--quiet", "origin", "HEAD");',
   "",
 );
+
+// The GitHub App's token minter: logs the repository it was asked for and
+// prints a token, unless told to fail.
+const MINTER_STUB = `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+appendFileSync(process.env.STUB_MINTER_LOG, process.argv.slice(2).join(" ") + "\\n");
+if (process.env.STUB_MINTER_FAIL) {
+  console.error("the App is not installed on this repository");
+  process.exit(1);
+}
+console.log("stub-app-token");
+`;
 
 const OSASCRIPT_STUB = `#!/usr/bin/env node
 const { appendFileSync } = require("node:fs");
@@ -312,7 +327,7 @@ server.on("upgrade", (request, socket) => {
 server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 `;
 
-async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", exitCode = 0, quota = undefined) {
+async function startFakeDaemon(fixture, { contractVersion = 5, failingTag = "", exitCode = 0, quota, env = {} } = {}) {
   const stateDir = path.join(fixture.tmp, "state");
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(path.join(stateDir, "token"), "test-token\n");
@@ -330,6 +345,7 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", ex
         STUB_CLAUDE_LOG: claudeLog,
         STUB_GH_LOG: path.join(fixture.tmp, "gh.log"),
         FAKE_QUOTA: quota === undefined ? "" : JSON.stringify(quota),
+        ...env,
       },
     },
   );
@@ -344,7 +360,7 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", ex
 // One kick against a fake daemon on the given contract, returning what the
 // runner sent it in order.
 async function runRunnerWithDaemon(fixture, { contractVersion, failingTag, exitCode, env, args, quota } = {}) {
-  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag, exitCode, quota);
+  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, { contractVersion, failingTag, exitCode, quota, env });
   try {
     const run = runRunner(fixture, { ...daemonEnv, ...env }, args);
     const calls = readFileSync(daemonLog, "utf8")
@@ -426,6 +442,8 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   writeFileSync(path.join(bin, "gh"), GH_STUB);
   writeFileSync(path.join(bin, "osascript"), OSASCRIPT_STUB);
   writeFileSync(path.join(bin, "pnpm"), PNPM_STUB);
+  writeFileSync(path.join(bin, "github-app-token"), MINTER_STUB);
+  chmodSync(path.join(bin, "github-app-token"), 0o755);
   chmodSync(path.join(bin, "pnpm"), 0o755);
   chmodSync(path.join(bin, "claude"), 0o755);
   chmodSync(path.join(bin, "gh"), 0o755);
@@ -443,28 +461,32 @@ function runRunner(fixture, env = {}, args = ON_HOST) {
   const ghLog = path.join(fixture.tmp, "gh.log");
   const osaLog = path.join(fixture.tmp, "osascript.log");
   const pnpmLog = path.join(fixture.tmp, "pnpm.log");
+  const minterLog = path.join(fixture.tmp, "minter.log");
+  writeFileSync(minterLog, "");
   writeFileSync(pnpmLog, "");
   writeFileSync(claudeLog, "");
   writeFileSync(ghLog, "");
   writeFileSync(osaLog, "");
-  const result = spawnSync("node", [RUNNER, ...args], {
-    cwd: fixture.repo,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      PATH: `${fixture.bin}:${process.env.PATH}`,
-      // No token here means no daemon, so a stub session never reaches a real one.
-      AGENTS_HQ_STATE_DIR: path.join(fixture.tmp, "no-daemon"),
-      // The tests may themselves run inside a daemon session.
-      AGENTS_HQ_SESSION_ID: undefined,
-      STUB_CLAUDE_LOG: claudeLog,
-      STUB_GH_LOG: ghLog,
-      STUB_OSA_LOG: osaLog,
-      STUB_PNPM_LOG: pnpmLog,
-      ...env,
-    },
-  });
-  return { result, claudeLog, ghLog, osaLog, pnpmLog };
+  const runEnv = {
+    ...process.env,
+    PATH: `${fixture.bin}:${process.env.PATH}`,
+    // No token here means no daemon, so a stub session never reaches a real one.
+    AGENTS_HQ_STATE_DIR: path.join(fixture.tmp, "no-daemon"),
+    // The tests may themselves run inside a daemon session.
+    AGENTS_HQ_SESSION_ID: undefined,
+    STUB_CLAUDE_LOG: claudeLog,
+    STUB_GH_LOG: ghLog,
+    STUB_OSA_LOG: osaLog,
+    STUB_PNPM_LOG: pnpmLog,
+    STUB_MINTER_LOG: minterLog,
+    ...env,
+  };
+  const result = spawnSync("node", [RUNNER, ...args], { cwd: fixture.repo, encoding: "utf8", env: runEnv });
+  // The runner never fetches into the repo, so the tests read what landed on origin themselves.
+  if (spawnSync("git", ["-C", fixture.repo, "remote", "get-url", "origin"]).status === 0) {
+    execFileSync("git", ["-C", fixture.repo, "fetch", "--quiet", "origin"], { env: runEnv });
+  }
+  return { result, claudeLog, ghLog, osaLog, pnpmLog, minterLog };
 }
 
 // The Slice trailers landed on origin's slices branch, sorted.
@@ -1503,5 +1525,219 @@ describe("run.mjs installs the worktree's dependencies before any session", () =
     assert.equal(second.result.status, 0, second.result.stderr);
     assert.match(second.result.stdout, /resuming in existing worktree/);
     assert.equal(readFileSync(second.pnpmLog, "utf8").split("\n").filter(Boolean).length, 1);
+  });
+});
+
+// Stands in for github.com over git's smart HTTP: git http-backend serves the
+// repositories under its root, and a push gets through only with the App
+// token, as a GitHub App installation's would. A separate process, because
+// the runner blocks in spawnSync while the test holds this end.
+const FAKE_GITHUB = `
+const { spawn } = require("node:child_process");
+const { appendFileSync } = require("node:fs");
+const { createServer } = require("node:http");
+const [root, logFile, token] = process.argv.slice(1);
+const expected = "Basic " + Buffer.from("x-access-token:" + token).toString("base64");
+const server = createServer((request, response) => {
+  const url = new URL(request.url, "http://localhost");
+  const pushing =
+    url.pathname.endsWith("/git-receive-pack") || url.searchParams.get("service") === "git-receive-pack";
+  const authorized = request.headers.authorization === expected;
+  appendFileSync(logFile, JSON.stringify({ path: url.pathname, pushing, authorized }) + "\\n");
+  if (pushing && !authorized) {
+    response.writeHead(401, { "WWW-Authenticate": 'Basic realm="fake-github"' });
+    return response.end();
+  }
+  const env = {
+    ...process.env,
+    GIT_PROJECT_ROOT: root,
+    GIT_HTTP_EXPORT_ALL: "1",
+    REQUEST_METHOD: request.method,
+    PATH_INFO: url.pathname,
+    QUERY_STRING: url.search.slice(1),
+    CONTENT_TYPE: request.headers["content-type"] ?? "",
+    HTTP_CONTENT_ENCODING: request.headers["content-encoding"] ?? "",
+    GIT_PROTOCOL: request.headers["git-protocol"] ?? "",
+    REMOTE_ADDR: "127.0.0.1",
+  };
+  if (authorized) env.REMOTE_USER = "x-access-token";
+  const backend = spawn("git", ["http-backend"], { env });
+  request.pipe(backend.stdin);
+  const chunks = [];
+  backend.stdout.on("data", (chunk) => chunks.push(chunk));
+  backend.on("close", () => {
+    const out = Buffer.concat(chunks);
+    const end = out.indexOf("\\r\\n\\r\\n");
+    let status = 200;
+    const headers = {};
+    for (const line of out.subarray(0, end).toString().split("\\r\\n")) {
+      const colon = line.indexOf(":");
+      const [key, value] = [line.slice(0, colon).trim(), line.slice(colon + 1).trim()];
+      if (key.toLowerCase() === "status") status = parseInt(value, 10);
+      else headers[key] = value;
+    }
+    response.writeHead(status, headers);
+    response.end(out.subarray(end + 4));
+  });
+});
+server.listen(0, "127.0.0.1", () => console.log(server.address().port));
+`;
+
+// Serves the fixture's origin as https://github.com/Dan86de/demo.git would be,
+// returning its URL and the log of every request with whether it carried the token.
+async function startFakeGithub(fixture) {
+  const root = path.join(fixture.tmp, "github");
+  mkdirSync(path.join(root, "Dan86de"), { recursive: true });
+  symlinkSync(path.join(fixture.tmp, "origin.git"), path.join(root, "Dan86de", "demo.git"));
+  const log = path.join(fixture.tmp, "github.log");
+  writeFileSync(log, "");
+  const server = spawn(process.execPath, ["-e", FAKE_GITHUB, root, log, "stub-app-token"], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const port = await new Promise((resolve) => server.stdout.once("data", (data) => resolve(String(data).trim())));
+  const requests = () =>
+    readFileSync(log, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  return { base: `http://127.0.0.1:${port}/`, requests, stop: () => server.kill() };
+}
+
+// A session inside a run's container: it commits, and has no credential to push with.
+const CONTAINER_STUB = CLAUDE_STUB.replaceAll('git("push", "--quiet", "origin", "HEAD");', "");
+
+// The last slice's session also plants what would run on the host if host git
+// ever ran in its tree: hooks, an fsmonitor and a filter, each leaving a marker.
+// Scoped to its worktree, as a container's own clone would hold them.
+const PLANTING_STUB = CONTAINER_STUB.replace(
+  '  git("commit", "--allow-empty", "-m", next.title + "\\n\\nProof.\\n\\n" + trailer);',
+  `  git("commit", "--allow-empty", "-m", next.title + "\\n\\nProof.\\n\\n" + trailer);
+  if (next.id === "S2") {
+    const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
+    const marks = process.env.STUB_MARKERS;
+    const hooks = marks + "-hooks";
+    mkdirSync(hooks, { recursive: true });
+    for (const hook of ["pre-push", "reference-transaction", "post-checkout", "post-merge", "pre-commit"]) {
+      writeFileSync(hooks + "/" + hook, "#!/bin/sh\\ntouch " + marks + "/hook-" + hook + "\\n");
+      chmodSync(hooks + "/" + hook, 0o755);
+    }
+    writeFileSync(hooks + "/fsmonitor", "#!/bin/sh\\ntouch " + marks + "/fsmonitor\\nexit 1\\n");
+    chmodSync(hooks + "/fsmonitor", 0o755);
+    git("config", "extensions.worktreeConfig", "true");
+    git("config", "--worktree", "core.hooksPath", hooks);
+    git("config", "--worktree", "core.fsmonitor", hooks + "/fsmonitor");
+    git("config", "--worktree", "filter.plant.clean", "touch " + marks + "/filter-clean; cat");
+    git("config", "--worktree", "filter.plant.smudge", "touch " + marks + "/filter-smudge; cat");
+    writeFileSync(git("rev-parse", "--git-path", "info/attributes"), "* filter=plant\\n");
+  }`,
+);
+
+describe("run.mjs pushes from a clone only the host writes, with the App's token", () => {
+  // What the bare origin itself holds on the slices branch, with no fetch in between.
+  const originTrailers = (fixture) =>
+    git(path.join(fixture.tmp, "origin.git"), "log", "--format=%(trailers:key=Slice,valueonly)", "main..slices/demo")
+      .split("\n")
+      .filter(Boolean)
+      .sort();
+  const hostClone = (fixture) => path.join(fixture.repo, ".git", "run-feature", "demo.git");
+
+  it("fetches each session's commits into its own clone and pushes them with the App token, hooks off", async () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    const github = await startFakeGithub(fixture);
+    git(fixture.repo, "remote", "set-url", "origin", `${github.base}Dan86de/demo.git`);
+    // A hook the shell's own git config points at runs on any push not given core.hooksPath=/dev/null.
+    const globalHooks = path.join(fixture.tmp, "global-hooks");
+    mkdirSync(globalHooks);
+    writeFileSync(path.join(globalHooks, "pre-push"), `#!/bin/sh\ntouch ${fixture.tmp}/global-pre-push\n`);
+    chmodSync(path.join(globalHooks, "pre-push"), 0o755);
+    const globalConfig = path.join(fixture.tmp, "gitconfig");
+    writeFileSync(globalConfig, `[core]\n\thooksPath = ${globalHooks}\n`);
+    try {
+      const { result, minterLog } = await runRunnerWithDaemon(fixture, { env: { GIT_CONFIG_GLOBAL: globalConfig } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(originTrailers(fixture), ["S1", "S2"]);
+      assert.equal(existsSync(hostClone(fixture)), false, "a clean finish deletes the host clone");
+      const minted = readFileSync(minterLog, "utf8").split("\n").filter(Boolean);
+      assert.ok(minted.length >= 3, minted.join("\n"));
+      assert.ok(minted.every((repository) => repository === "Dan86de/demo"), minted.join("\n"));
+      const pushes = github.requests().filter((request) => request.pushing);
+      assert.ok(pushes.length > 0);
+      assert.ok(pushes.every((request) => request.authorized), JSON.stringify(pushes));
+      assert.equal(existsSync(path.join(fixture.tmp, "global-pre-push")), false);
+      assert.doesNotMatch(readFileSync(path.join(fixture.repo, ".git", "config"), "utf8"), /stub-app-token|extraheader/i);
+    } finally {
+      github.stop();
+    }
+  });
+
+  it("pushes a GitHub SSH origin at its HTTPS address, past the user's own URL rewrites", async () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    const github = await startFakeGithub(fixture);
+    git(fixture.repo, "remote", "set-url", "origin", "git@github.com:Dan86de/demo.git");
+    // A push address of its own wins over the fetch address, in either SSH form.
+    git(fixture.repo, "config", "remote.origin.pushurl", "ssh://git@github.com/Dan86de/demo.git");
+    // Stands in for github.com: the SSH origin and its HTTPS address both reach
+    // the fake, and a push left at the SSH address lands nowhere.
+    const routes =
+      `'url.${github.base}.insteadof'='git@github.com:' ` +
+      `'url.${github.base}.insteadof'='https://github.com/' ` +
+      `'url.${github.base}nowhere/.pushinsteadof'='git@github.com:' ` +
+      `'url.${github.base}nowhere/.pushinsteadof'='ssh://git@github.com/'`;
+    // A user rule sending HTTPS pushes back to SSH, as many a git setup has.
+    const globalConfig = path.join(fixture.tmp, "gitconfig");
+    writeFileSync(globalConfig, `[url "${github.base}nowhere/"]\n\tpushInsteadOf = https://github.com/\n`);
+    try {
+      const { result, minterLog } = await runRunnerWithDaemon(fixture, {
+        env: { GIT_CONFIG_PARAMETERS: routes, GIT_CONFIG_GLOBAL: globalConfig },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(originTrailers(fixture), ["S1", "S2"]);
+      assert.match(readFileSync(minterLog, "utf8"), /^Dan86de\/demo$/m);
+      assert.ok(github.requests().every((request) => !request.path.startsWith("/nowhere/")));
+    } finally {
+      github.stop();
+    }
+  });
+
+  it("a hook, an fsmonitor and a filter planted in the session's tree run nowhere during the fetch and push", async () => {
+    // The close leaves the PR a draft, so the run halts before removing the
+    // worktree, whose clean check runs the tree's fsmonitor and filter as any status does.
+    const fixture = makeFixture(
+      PLANTING_STUB.replace('  execFileSync("gh", ["pr", "ready", "demo"]);', ""),
+    );
+    const marks = path.join(fixture.tmp, "markers");
+    mkdirSync(marks);
+    const { result } = await runRunnerWithDaemon(fixture, { env: { STUB_MARKERS: marks } });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /halt: the close session did not finish: the PR is still a draft/);
+    assert.deepEqual(originTrailers(fixture), ["S1", "S2"]);
+    assert.deepEqual(readdirSync(marks), []);
+    // The planted items were live: git run in that tree trips every one.
+    writeFileSync(path.join(fixture.worktree, "spec", "features", "demo", "spec.md"), "# demo, edited\n");
+    git(fixture.worktree, "add", "spec/features/demo/spec.md");
+    git(fixture.worktree, "commit", "--quiet", "-m", "planted hooks fire");
+    assert.deepEqual(readdirSync(marks).sort(), ["filter-clean", "fsmonitor", "hook-pre-commit", "hook-reference-transaction"]);
+  });
+
+  it("without a minter on PATH, pushes from the host clone with the shell's own credential, and says so", () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    rmSync(path.join(fixture.bin, "github-app-token"));
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(originTrailers(fixture), ["S1", "S2"]);
+    const said = result.stdout.split("\n").filter((line) => line.includes("no github-app-token on PATH"));
+    assert.equal(said.length, 1, result.stdout);
+  });
+
+  it("a minter that fails halts as push refused with its reason, and pushes nothing", () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    const { result, osaLog } = runRunner(fixture, { STUB_MINTER_FAIL: "1" });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(
+      result.stderr,
+      /halt: github-app-token gave no token for [^:]+: the App is not installed on this repository; fix the minter, then re-kick/,
+    );
+    assert.deepEqual(bannerPayloads(osaLog), ["push refused"]);
+    assert.equal(spawnSync("git", ["-C", path.join(fixture.tmp, "origin.git"), "rev-parse", "--verify", "--quiet", "slices/demo"]).status, 1);
   });
 });

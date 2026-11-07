@@ -29,6 +29,9 @@ const RESERVE_PERCENT = `${AGENT_WEEKLY_RESERVE * 100}%`;
 // A timer can fire a moment early, which would read the reset as still ahead.
 const RESET_MARGIN_MS = 1000;
 
+// Prints a 1-hour GitHub App token for the <owner>/<repo> it is given.
+const TOKEN_MINTER = "github-app-token";
+
 // The Bash allowlist seeded into a project that has no committed Claude
 // settings yet. The headless sessions skip the permission system entirely;
 // this baseline is for the attended sessions a human runs in a kept worktree.
@@ -261,24 +264,99 @@ function readSlices(worktree, slug) {
   return parsed.slices;
 }
 
-// Commit one file to the slices branch, pushed when a remote exists, so the
-// worktree stays clean. A session may already have committed the file itself,
-// so a clean index just skips to the push.
-function commitFile(worktree, relative, message, hasOrigin) {
+// Commit one file to the slices branch, then push it, so the worktree stays
+// clean. A session may already have committed the file itself, so a clean
+// index just skips to the push.
+function commitFile(worktree, relative, message, push) {
   git(worktree, ["add", relative]);
   if (!gitOk(worktree, ["diff", "--cached", "--quiet"])) {
     gitOrHalt(worktree, ["commit", "--quiet", "-m", message], "commit refused", `committing ${relative}`);
   }
-  if (hasOrigin) gitOrHalt(worktree, ["push", "--quiet", "origin", "HEAD"], "push refused", `pushing ${relative}`);
+  push();
 }
 
 // A hook or remote can refuse what the runner commits; that is a halt naming
 // git's own reason, never a stack trace.
-function gitOrHalt(worktree, args, state, doing) {
-  const result = spawnSync("git", ["-C", worktree, ...args], { encoding: "utf8" });
+function gitOrHalt(dir, args, state, doing, { env, worktree = dir } = {}) {
+  const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", env });
   if (result.status === 0) return;
   const cause = (result.stderr || result.stdout || "").trim() || `git exited with ${result.status}`;
   halt(state, `git refused ${doing}: ${cause}; fix it in the worktree, then re-kick`, worktree);
+}
+
+// A bare clone only the host writes, the one place the slices branch is pushed
+// from. Bare, so nothing ever checks a file out and runs a filter on it.
+function hostClone(repo, slug) {
+  const common = git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const clone = path.join(common, "run-feature", `${slug}.git`);
+  if (!existsSync(clone)) git(repo, ["init", "--bare", "--quiet", "--template=", clone]);
+  return clone;
+}
+
+// The App's token, or null when no minter is installed; a minter that fails is
+// a halt, never a push with some other credential.
+function mintToken(repository, worktree) {
+  const result = spawnSync(TOKEN_MINTER, [repository], { encoding: "utf8" });
+  if (result.error?.code === "ENOENT") return null;
+  const token = result.stdout?.trim() ?? "";
+  if (result.status !== 0 || token === "") {
+    const cause = result.error?.message || result.stderr?.trim() || `it exited with ${result.status}`;
+    halt("push refused", `${TOKEN_MINTER} gave no token for ${repository}: ${cause}; fix the minter, then re-kick`, worktree);
+  }
+  return token;
+}
+
+let warnedNoMinter = false;
+
+// Pushes the slices branch as the session's tree holds it, without running git
+// in that tree: the host clone fetches from it, which runs none of its hooks,
+// config or filters, and pushes with every hook off.
+function publish({ worktree, clone, slug, origin }) {
+  const ref = `refs/heads/slices/${slug}`;
+  const hostArgs = [`--git-dir=${clone}`, "-c", "core.hooksPath=/dev/null"];
+  const hostGit = (args, doing, env) =>
+    gitOrHalt(clone, [...hostArgs, ...args], "push refused", doing, { env, worktree });
+  // Only a broken worktree or a lost branch fails this, so it is no push refusal.
+  const fetch = [...hostArgs, "fetch", "--quiet", "--no-tags", worktree, `+${ref}:${ref}`];
+  const fetched = spawnSync("git", ["-C", clone, ...fetch], { encoding: "utf8" });
+  if (fetched.status !== 0) fail(`could not fetch slices/${slug} from ${worktree}: ${fetched.stderr.trim()}`);
+  const app = appRemote(origin);
+  const token = mintToken(app.repository, worktree);
+  if (token === null) {
+    if (!warnedNoMinter) log(`push: no ${TOKEN_MINTER} on PATH, so pushes use this shell's own git credential`);
+    warnedNoMinter = true;
+    hostGit(["push", "--quiet", origin, `${ref}:${ref}`], `pushing slices/${slug}`);
+    return;
+  }
+  // The token goes in through the environment, so it never shows in a process
+  // list or lands in a config file. The user's and the system's git config
+  // files stay out, so no insteadOf of theirs rewrites the push to SSH and no
+  // stored login answers in the App's place.
+  const header = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
+  hostGit(["push", "--quiet", app.url, `${ref}:${ref}`], `pushing slices/${slug} with the App token`, {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.extraHeader",
+    GIT_CONFIG_VALUE_0: header,
+  });
+}
+
+// Origin's push address as configured, before any insteadOf rewrites it.
+function originUrl(repo) {
+  const pushUrl = spawnSync("git", ["-C", repo, "config", "--get", "remote.origin.pushurl"], { encoding: "utf8" });
+  return pushUrl.status === 0 ? pushUrl.stdout.trim() : git(repo, ["config", "--get", "remote.origin.url"]);
+}
+
+// The <owner>/<repo> the minter is asked for, and where the App's token is
+// pushed: an App token works only over HTTPS, so a GitHub SSH remote is pushed
+// to at its HTTPS address.
+function appRemote(url) {
+  const ssh = url.match(/^(?:ssh:\/\/)?git@github\.com[:/](.+?)(?:\.git)?\/?$/);
+  if (ssh) return { repository: ssh[1], url: `https://github.com/${ssh[1]}.git` };
+  return { repository: url.replace(/\.git\/?$/, "").split(/[/:]/).slice(-2).join("/"), url };
 }
 
 // The lockfile names the package manager, and its frozen install is the one
@@ -315,13 +393,13 @@ async function installDependencies(worktree) {
 
 // Seed a project that has no committed Claude settings with a default Bash
 // allowlist, committed like the pre-steps so the worktree stays clean.
-function ensureSettings(worktree, hasOrigin) {
+function ensureSettings(worktree, push) {
   const relative = path.join(".claude", "settings.json");
   const target = path.join(worktree, relative);
   if (existsSync(target)) return;
   mkdirSync(path.dirname(target), { recursive: true });
   writeFileSync(target, JSON.stringify(DEFAULT_SETTINGS, null, 2) + "\n");
-  commitFile(worktree, relative, "chore: seed the default Claude settings allowlist", hasOrigin);
+  commitFile(worktree, relative, "chore: seed the default Claude settings allowlist", push);
   log(`seeded ${relative} with the default Bash allowlist`);
 }
 
@@ -617,7 +695,7 @@ function hasVerifySkill(worktree) {
 
 // One headless pre-step: have a writing skill produce a missing spec file,
 // then commit it, so the loop starts from committed state as always.
-async function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) {
+async function runPreStep({ worktree, slug, file, prompt, session, push }) {
   const relative = path.join("spec", "features", slug, file);
   const target = path.join(worktree, relative);
   if (existsSync(target)) return;
@@ -635,7 +713,7 @@ async function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) 
       worktree,
     );
   }
-  commitFile(worktree, relative, `spec: write ${slug} ${file} headlessly`, hasOrigin);
+  commitFile(worktree, relative, `spec: write ${slug} ${file} headlessly`, push);
   log(`pre-step committed ${relative}`);
 }
 
@@ -689,11 +767,20 @@ async function main() {
     );
   }
 
-  ensureSettings(worktree, hasOrigin);
+  const remote = hasOrigin
+    ? { worktree, slug, clone: hostClone(repo, slug), origin: originUrl(repo) }
+    : null;
+  const push = () => {
+    if (remote) publish(remote);
+  };
+  ensureSettings(worktree, push);
 
+  // A session never pushes for the run: whatever it committed is published here.
   const session = async (prompt, label, member) => {
     if (agentAccount) await waitOutQuota(worktree);
-    return runHarnessSession({ worktree, prompt, label, ...member });
+    const sessionId = await runHarnessSession({ worktree, prompt, label, ...member });
+    push();
+    return sessionId;
   };
 
   const featureDir = path.join(worktree, "spec", "features", slug);
@@ -706,7 +793,7 @@ async function main() {
     file: "spec.md",
     prompt: `/write-spec spec/features/${slug}/decisions.md`,
     session,
-    hasOrigin,
+    push,
   });
   await runPreStep({
     worktree,
@@ -714,7 +801,7 @@ async function main() {
     file: "slices.json",
     prompt: `/write-slices spec/features/${slug}/spec.md`,
     session,
-    hasOrigin,
+    push,
   });
 
   const slices = readSlices(worktree, slug);
@@ -726,7 +813,6 @@ async function main() {
   let lastSession;
   let failingSlice = null;
   for (;;) {
-    if (hasOrigin) git(worktree, ["fetch", "origin", "--quiet"]);
     const states = sliceStates(worktree, base, slices);
     const allDone = slices.every((slice) => states.done.has(slice.id));
 
@@ -747,6 +833,7 @@ async function main() {
         );
       }
       removeWorktree(repo, worktree);
+      if (remote) rmSync(remote.clone, { recursive: true, force: true });
       board.outcome = "completed";
       board.detail = undefined;
       notify("complete");

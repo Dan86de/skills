@@ -35,6 +35,13 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - Installs the worktree's dependencies before any session when it has a lockfile and no `node_modules`, with the lockfile's frozen install: pnpm, npm, yarn or bun.
   A failed install halts as `install failed`, since a project's commit hooks and verify skill usually need those dependencies.
 - Halts as `commit refused` or `push refused`, quoting git's reason, when a hook or the remote rejects a file the script commits itself.
+- Pushes `slices/<slug>` itself after every session and every file it commits, never from the worktree.
+  A bare clone at `.git/run-feature/<slug>.git` in the repo, which only the host writes, fetches the branch from the worktree, which runs none of the worktree's hooks, config or filters, and pushes it with `core.hooksPath=/dev/null`.
+  The push carries a 1-hour GitHub App token printed by `github-app-token <owner>/<repo>` on `PATH`, goes to origin's HTTPS address even for a GitHub SSH remote, and leaves the user's and the system's git config files out, so no URL rewrite or stored login in them stands in for the App.
+  A minter that fails halts as `push refused`.
+  A clean finish deletes that clone with the worktree; a halt keeps both.
+  With no minter on `PATH`, the push uses the shell's own git credential and the script says so once.
+  Between sessions it fetches nothing into the worktree, since a fetch there runs the worktree's own fsmonitor and hooks.
 - Writes a missing spec or slices file through a headless write-spec or write-slices session and commits it to the slices branch before the loop starts.
 - Seeds a project that has no committed `.claude/settings.json` with a default Bash allowlist and commits it before any session, a baseline for the attended sessions a human runs in a kept worktree.
 - Runs each slice attempt as a fresh `/implement-slice spec/features/<slug>/` session with full access: the worktree is dedicated and the loop is already trusted to commit and push, so an allowlist would only stall it.
