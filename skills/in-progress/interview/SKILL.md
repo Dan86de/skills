@@ -82,7 +82,7 @@ Anything it surfaces goes back on the frontier, then sweep again.
 ## 5. The decision record
 
 The session ends when the frontier is empty, the sweep is clean, and the user confirms a shared understanding.
-Emit it into the conversation, write it to `spec/features/<slug>/decisions.md`, and add its terms to `spec/glossary.md`, where `<slug>` is a short kebab-case name for the subject that you confirm with the user.
+Emit it into the conversation, write it to `spec/features/<slug>/decisions.md`, and add its terms to `spec/glossary.md`, rewriting a term already there instead of defining it twice, where `<slug>` is a short kebab-case name for the subject that you confirm with the user.
 A cut is written there too, so the reason survives.
 If you kept a picture, render it once more with every node settled, not doing, or cut, and give its path under the record.
 
