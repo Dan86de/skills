@@ -1,5 +1,11 @@
 # dan86de-skills
 
+## 0.16.5
+
+### Patch Changes
+
+- [#52](https://github.com/Dan86de/skills/pull/52) [`3f9e88c`](https://github.com/Dan86de/skills/commit/3f9e88cbff40de0bcf3987d764310d349992b369) Thanks [@Dan86de](https://github.com/Dan86de)! - `interview` now opens each round with the beliefs it holds so far and flags the shakiest one, decides cheap-to-undo calls itself, withholds its recommendation on the one or two questions where the user's view matters most, asks behaviour as concrete scenarios, lets the user describe the subject freely before round zero, and records the terms it coined in the decision record and `spec/glossary.md`.
+
 ## 0.16.4
 
 ### Patch Changes
