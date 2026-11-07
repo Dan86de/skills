@@ -14,17 +14,34 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 2. **Check the input**: `spec/features/<slug>/decisions.md`, or an already written `spec.md`, is committed.
    With both missing, tell the user to settle the decisions first and end the turn.
 3. **Kick the run**: from the target repo's root, run `node <skill-folder>/scripts/run.mjs <slug>`, resolving the script's full path from this skill's folder, and stream its output.
+   Add `--on-host` only when the user asked to run on this machine; without it the script refuses, and that refusal is the end state to report.
+   Add `--agent-account` when the daemon's sessions spend the separate agent account, as on the VM, so the run keeps that account's reserve.
    When the target repo's own checkout is sitting on `slices/<slug>` with a clean tree, switch it back to the default branch first; the script refuses to run while any checkout holds the branch.
    Do not parse the harness sessions' output for state; the script already decides from git alone.
-4. **Report the end state**: the exit code, the slices landed, the worktree path, and the PR.
+4. **Report the end state**: the exit code, the slices landed, the worktree path, the PR, and whether it ran with `--on-host` and `--agent-account`.
 
 ## What the script does
 
+- Refuses the kick before any git or session work unless it is given `--on-host`, since no session starts in a container yet and each would run on the host with full access, beside the shell's credentials.
+  With the flag it logs `on host: --on-host given` as its first line, so the run's report carries it.
+- With `--agent-account`, starts no session while the daemon's latest quota reading shows 95% of the week used or any usage limit, so 5% of the agent account's week is left for a person to debug a stuck run.
+  The current session finishes; the run then reads `waiting` with the reset time, fires one `waiting for quota` banner, and resumes by itself once the reset passes.
+  A session that a usage limit cut short, leaving a clean tree, is settled `stopped` and does not count as a failed attempt; the reserve never cuts one short.
+  A limit with no reset time halts as `quota reached`, with the run `waiting`.
+  A kick with no daemon has no reading, so no brake.
+  The flag names the account because its `setup-token` cannot.
 - Creates the worktree as a sibling of the repo, named `<repo>-slices-<slug>`, on the branch `slices/<slug>`, so the main checkout stays untouched.
 - Halts before any harness session when the project has no verify skill, naming make-verify.
 - Installs the worktree's dependencies before any session when it has a lockfile and no `node_modules`, with the lockfile's frozen install: pnpm, npm, yarn or bun.
   A failed install halts as `install failed`, since a project's commit hooks and verify skill usually need those dependencies.
 - Halts as `commit refused` or `push refused`, quoting git's reason, when a hook or the remote rejects a file the script commits itself.
+- Pushes `slices/<slug>` itself after every session and every file it commits, never from the worktree.
+  A bare clone at `.git/run-feature/<slug>.git` in the repo, which only the host writes, fetches the branch from the worktree, which runs none of the worktree's hooks, config or filters, and pushes it with `core.hooksPath=/dev/null`.
+  The push carries a 1-hour GitHub App token printed by `github-app-token <owner>/<repo>` on `PATH`, goes to origin's HTTPS address even for a GitHub SSH remote, and leaves the user's and the system's git config files out, so no URL rewrite or stored login in them stands in for the App.
+  A minter that fails halts as `push refused`.
+  A clean finish deletes that clone with the worktree; a halt keeps both.
+  With no minter on `PATH`, the push uses the shell's own git credential and the script says so once.
+  Between sessions it fetches nothing into the worktree, since a fetch there runs the worktree's own fsmonitor and hooks.
 - Writes a missing spec or slices file through a headless write-spec or write-slices session and commits it to the slices branch before the loop starts.
 - Seeds a project that has no committed `.claude/settings.json` with a default Bash allowlist and commits it before any session, a baseline for the attended sessions a human runs in a kept worktree.
 - Runs each slice attempt as a fresh `/implement-slice spec/features/<slug>/` session with full access: the worktree is dedicated and the loop is already trusted to commit and push, so an allowlist would only stall it.

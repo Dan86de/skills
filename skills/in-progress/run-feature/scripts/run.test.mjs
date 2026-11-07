@@ -1,6 +1,8 @@
 // Seam tests for run.mjs: drive the runner's process boundary against a
 // throwaway target repo with a stub harness and gh on PATH.
-// Covers slices S1 through S6 of spec/features/run-feature/spec.md.
+// Covers slices S1 through S6 of spec/features/run-feature/spec.md, the
+// refusal to start sessions on the host without --on-host, the agent
+// account's quota brake, and the push from a host-owned clone with an App token.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -9,8 +11,11 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -122,6 +127,18 @@ const LOCAL_ONLY_STUB = CLOSE_STAYS_DRAFT_STUB.replaceAll("origin/main..HEAD", "
   "",
 );
 
+// The GitHub App's token minter: logs the repository it was asked for and
+// prints a token, unless told to fail.
+const MINTER_STUB = `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+appendFileSync(process.env.STUB_MINTER_LOG, process.argv.slice(2).join(" ") + "\\n");
+if (process.env.STUB_MINTER_FAIL) {
+  console.error("the App is not installed on this repository");
+  process.exit(1);
+}
+console.log("stub-app-token");
+`;
+
 const OSASCRIPT_STUB = `#!/usr/bin/env node
 const { appendFileSync } = require("node:fs");
 appendFileSync(process.env.STUB_OSA_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
@@ -215,18 +232,28 @@ const MANY_SLICES = {
 
 // Stands in for the agents-hq daemon on its real wire: JSON lines over a
 // WebSocket that offers the state dir's token as a subprotocol. It logs every
-// request, runs a launched session as one stub harness process, and then lists
-// the session as exited. A separate process, because the runner blocks in
-// spawnSync while the test holds this end.
+// request with its time, runs a launched session as one stub harness process,
+// and then lists the session as exited. A separate process, because the runner
+// blocks in spawnSync while the test holds this end.
+// FAKE_QUOTA scripts the quota reading on ping: { reading, resetInMs, afterSessions,
+// cutsSession }. The reading appears once afterSessions sessions launched, resetting
+// resetInMs later, and with cutsSession that session ends before its harness runs.
 const FAKE_DAEMON = `
 const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { appendFileSync } = require("node:fs");
 const { createServer } = require("node:http");
 const [logFile, token, contractVersion, failingTag, exitCode] = process.argv.slice(1);
+const quota = process.env.FAKE_QUOTA ? JSON.parse(process.env.FAKE_QUOTA) : undefined;
+let reading;
+const report = () => {
+  reading = { ...quota.reading };
+  if (quota.resetInMs !== null) reading.resetsAt = new Date(Date.now() + quota.resetInMs).toISOString();
+};
+if (quota && !quota.afterSessions) report();
 const sessions = [];
 const answer = (tag, payload) => {
-  if (tag === "ping") return { contractVersion: Number(contractVersion) };
+  if (tag === "ping") return { contractVersion: Number(contractVersion), ...(reading ? { quota: reading } : {}) };
   if (tag === "runStart") return { runId: "run-1" };
   if (tag === "sessionList") {
     return sessions.map((sessionId) => ({ sessionId, state: { _tag: "Exited", exitCode: Number(exitCode) } }));
@@ -234,9 +261,13 @@ const answer = (tag, payload) => {
   if (tag === "sessionLaunch") {
     const sessionId = "session-" + (sessions.length + 1);
     sessions.push(sessionId);
-    try {
-      execFileSync("claude", ["-p", payload.prompt], { cwd: payload.location.path, stdio: "ignore" });
-    } catch {}
+    const reachesQuota = quota !== undefined && sessions.length === quota.afterSessions;
+    if (!(reachesQuota && quota.cutsSession)) {
+      try {
+        execFileSync("claude", ["-p", payload.prompt], { cwd: payload.location.path, stdio: "ignore" });
+      } catch {}
+    }
+    if (reachesQuota) report();
     return { sessionId };
   }
   return null;
@@ -283,7 +314,7 @@ server.on("upgrade", (request, socket) => {
       if (opcode !== 1) continue;
       for (let i = 0; i < body.length; i++) body[i] ^= mask[i % 4];
       const { id, tag, payload } = JSON.parse(body.toString().trim());
-      appendFileSync(logFile, JSON.stringify({ tag, payload }) + "\\n");
+      appendFileSync(logFile, JSON.stringify({ tag, payload, at: Date.now() }) + "\\n");
       if (failingTag === "drop:" + tag) return socket.destroy();
       const exit =
         tag === failingTag
@@ -296,7 +327,7 @@ server.on("upgrade", (request, socket) => {
 server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 `;
 
-async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", exitCode = 0) {
+async function startFakeDaemon(fixture, { contractVersion = 5, failingTag = "", exitCode = 0, quota, env = {} } = {}) {
   const stateDir = path.join(fixture.tmp, "state");
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(path.join(stateDir, "token"), "test-token\n");
@@ -313,6 +344,8 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", ex
         PATH: `${fixture.bin}:${process.env.PATH}`,
         STUB_CLAUDE_LOG: claudeLog,
         STUB_GH_LOG: path.join(fixture.tmp, "gh.log"),
+        FAKE_QUOTA: quota === undefined ? "" : JSON.stringify(quota),
+        ...env,
       },
     },
   );
@@ -326,10 +359,10 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", ex
 
 // One kick against a fake daemon on the given contract, returning what the
 // runner sent it in order.
-async function runRunnerWithDaemon(fixture, { contractVersion, failingTag, exitCode, env } = {}) {
-  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag, exitCode);
+async function runRunnerWithDaemon(fixture, { contractVersion, failingTag, exitCode, env, args, quota } = {}) {
+  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, { contractVersion, failingTag, exitCode, quota, env });
   try {
-    const run = runRunner(fixture, { ...daemonEnv, ...env });
+    const run = runRunner(fixture, { ...daemonEnv, ...env }, args);
     const calls = readFileSync(daemonLog, "utf8")
       .split("\n")
       .filter(Boolean)
@@ -409,6 +442,8 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   writeFileSync(path.join(bin, "gh"), GH_STUB);
   writeFileSync(path.join(bin, "osascript"), OSASCRIPT_STUB);
   writeFileSync(path.join(bin, "pnpm"), PNPM_STUB);
+  writeFileSync(path.join(bin, "github-app-token"), MINTER_STUB);
+  chmodSync(path.join(bin, "github-app-token"), 0o755);
   chmodSync(path.join(bin, "pnpm"), 0o755);
   chmodSync(path.join(bin, "claude"), 0o755);
   chmodSync(path.join(bin, "gh"), 0o755);
@@ -418,33 +453,40 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   return { tmp, repo, bin, worktree };
 }
 
-function runRunner(fixture, env = {}) {
+// A kick on the host, as every test but the refusal ones takes it.
+const ON_HOST = ["demo", "--on-host"];
+
+function runRunner(fixture, env = {}, args = ON_HOST) {
   const claudeLog = path.join(fixture.tmp, "claude.log");
   const ghLog = path.join(fixture.tmp, "gh.log");
   const osaLog = path.join(fixture.tmp, "osascript.log");
   const pnpmLog = path.join(fixture.tmp, "pnpm.log");
+  const minterLog = path.join(fixture.tmp, "minter.log");
+  writeFileSync(minterLog, "");
   writeFileSync(pnpmLog, "");
   writeFileSync(claudeLog, "");
   writeFileSync(ghLog, "");
   writeFileSync(osaLog, "");
-  const result = spawnSync("node", [RUNNER, "demo"], {
-    cwd: fixture.repo,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      PATH: `${fixture.bin}:${process.env.PATH}`,
-      // No token here means no daemon, so a stub session never reaches a real one.
-      AGENTS_HQ_STATE_DIR: path.join(fixture.tmp, "no-daemon"),
-      // The tests may themselves run inside a daemon session.
-      AGENTS_HQ_SESSION_ID: undefined,
-      STUB_CLAUDE_LOG: claudeLog,
-      STUB_GH_LOG: ghLog,
-      STUB_OSA_LOG: osaLog,
-      STUB_PNPM_LOG: pnpmLog,
-      ...env,
-    },
-  });
-  return { result, claudeLog, ghLog, osaLog, pnpmLog };
+  const runEnv = {
+    ...process.env,
+    PATH: `${fixture.bin}:${process.env.PATH}`,
+    // No token here means no daemon, so a stub session never reaches a real one.
+    AGENTS_HQ_STATE_DIR: path.join(fixture.tmp, "no-daemon"),
+    // The tests may themselves run inside a daemon session.
+    AGENTS_HQ_SESSION_ID: undefined,
+    STUB_CLAUDE_LOG: claudeLog,
+    STUB_GH_LOG: ghLog,
+    STUB_OSA_LOG: osaLog,
+    STUB_PNPM_LOG: pnpmLog,
+    STUB_MINTER_LOG: minterLog,
+    ...env,
+  };
+  const result = spawnSync("node", [RUNNER, ...args], { cwd: fixture.repo, encoding: "utf8", env: runEnv });
+  // The runner never fetches into the repo, so the tests read what landed on origin themselves.
+  if (spawnSync("git", ["-C", fixture.repo, "remote", "get-url", "origin"]).status === 0) {
+    execFileSync("git", ["-C", fixture.repo, "fetch", "--quiet", "origin"], { env: runEnv });
+  }
+  return { result, claudeLog, ghLog, osaLog, pnpmLog, minterLog };
 }
 
 // The Slice trailers landed on origin's slices branch, sorted.
@@ -1230,7 +1272,7 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     writeFileSync(path.join(fixture.bin, "claude"), "#!/bin/sh\nsleep 1\n");
     const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture);
     try {
-      const runner = spawn("node", [RUNNER, "demo"], {
+      const runner = spawn("node", [RUNNER, ...ON_HOST], {
         cwd: fixture.repo,
         stdio: "ignore",
         env: { ...process.env, ...daemonEnv, AGENTS_HQ_SESSION_ID: undefined, PATH: `${fixture.bin}:${process.env.PATH}` },
@@ -1263,6 +1305,169 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     assert.match(result.stderr, /contract 4/);
     assert.deepEqual(callsTo(calls, "runStart"), []);
     assert.match(result.stdout, /running outside agents-hq/);
+  });
+});
+
+describe("run.mjs refuses to start sessions outside a container without --on-host", () => {
+  const sessionsIn = (claudeLog) => readFileSync(claudeLog, "utf8").split("\n").filter(Boolean).length;
+
+  it("through the daemon, a kick without --on-host refuses before any session or run", async () => {
+    const fixture = makeFixture();
+    const { result, calls, claudeLog, osaLog } = await runRunnerWithDaemon(fixture, { args: ["demo"] });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /refusing to start sessions outside a container.*pass --on-host/);
+    assert.deepEqual(calls, []);
+    assert.equal(sessionsIn(claudeLog), 0);
+    assert.equal(existsSync(fixture.worktree), false);
+    assert.deepEqual(bannerPayloads(osaLog), []);
+  });
+
+  it("through the daemon, a kick with --on-host runs and its report carries the flag", async () => {
+    const fixture = makeFixture();
+    const { result, calls } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout.split("\n")[0], /^\[run-feature\] on host: --on-host given/);
+    assert.equal(callsTo(calls, "sessionLaunch").length, 3);
+  });
+
+  it("with no daemon, the claude -p fallback is refused the same way without --on-host", () => {
+    const fixture = makeFixture();
+    const { result, claudeLog } = runRunner(fixture, {}, ["demo"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /refusing to start sessions outside a container.*pass --on-host/);
+    assert.equal(sessionsIn(claudeLog), 0);
+    assert.equal(existsSync(fixture.worktree), false);
+  });
+
+  it("with no daemon and --on-host, the fallback runs and its report carries the flag", () => {
+    const fixture = makeFixture();
+    const { result, claudeLog } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout.split("\n")[0], /^\[run-feature\] on host: --on-host given/);
+    assert.match(result.stdout, /running outside agents-hq/);
+    assert.equal(sessionsIn(claudeLog), 3);
+  });
+});
+
+describe("run.mjs brakes the agent account at 95% of the week and waits out limits", () => {
+  const AGENT = [...ON_HOST, "--agent-account"];
+  const weekAt = (utilization) => ({ window: "seven_day", status: "allowed_warning", utilization });
+  const RESET_MS = 1500;
+  const waits = (calls) => callsTo(calls, "runEnd").filter(({ outcome }) => outcome === "waiting");
+  const launchTimes = (calls) => calls.filter(({ tag }) => tag === "sessionLaunch").map(({ at }) => at);
+  const resetOf = (wait) => Date.parse(wait.detail.match(/reset at (\S+)\.$/)[1]);
+
+  it("at 95% of the week starts no session until the week resets, then finishes", async () => {
+    const fixture = makeFixture();
+    const { result, calls, osaLog } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: weekAt(0.95), resetInMs: RESET_MS },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout.split("\n")[1], /^\[run-feature\] agent account: --agent-account given/);
+    const [wait] = waits(calls);
+    assert.match(wait.detail, /^Waiting for the agent account's 95% weekly reserve to reset at /);
+    assert.ok(launchTimes(calls).every((at) => at >= resetOf(wait)));
+    assert.equal(launchTimes(calls).length, 3);
+    const keys = callsTo(calls, "runStart").map(({ key }) => key);
+    assert.deepEqual(keys, [keys[0], keys[0]]);
+    assert.equal(callsTo(calls, "runEnd").at(-1).outcome, "completed");
+    assert.deepEqual(bannerPayloads(osaLog), ["waiting for quota", "complete"]);
+  });
+
+  it("a session that crosses 95% finishes, and the next one waits for the reset", async () => {
+    const fixture = makeFixture();
+    const { result, calls } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: weekAt(0.96), resetInMs: RESET_MS, afterSessions: 1 },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const [first, ...rest] = launchTimes(calls);
+    const [wait] = waits(calls);
+    assert.ok(first < resetOf(wait));
+    assert.ok(rest.length === 2 && rest.every((at) => at >= resetOf(wait)));
+    assert.deepEqual(landedTrailers(fixture.repo), ["S1", "S2"]);
+  });
+
+  it("shows no step running while it waits, and the plan again once it resumes", async () => {
+    const fixture = makeFixture();
+    const { calls } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: weekAt(0.96), resetInMs: RESET_MS, afterSessions: 1 },
+    });
+    const plans = callsTo(calls, "runSteps").map(({ steps }) => steps.map(({ id, state }) => `${id} ${state}`).join(", "));
+    assert.deepEqual(plans.slice(0, 5), [
+      "S1 pending, S2 pending",
+      "S1 running, S2 pending",
+      "S1 done, S2 pending",
+      "S1 done, S2 running",
+      "S1 done, S2 pending",
+    ]);
+    assert.equal(plans[5], "S1 done, S2 running");
+  });
+
+  it("below 95% the agent account runs straight through", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), {
+      args: AGENT,
+      quota: { reading: weekAt(0.94), resetInMs: 60_000 },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(waits(calls), []);
+  });
+
+  it("a reading whose reset has passed is stale and holds nothing back", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), {
+      args: AGENT,
+      quota: { reading: weekAt(0.99), resetInMs: -1000 },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(waits(calls), []);
+  });
+
+  it("without --agent-account a reading at 95% brakes nothing", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), {
+      quota: { reading: weekAt(0.97), resetInMs: 60_000 },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(waits(calls), []);
+    assert.doesNotMatch(result.stdout, /agent account/);
+  });
+
+  it("a usage limit that cuts a session short is waited out without counting a failed attempt", async () => {
+    const fixture = makeFixture();
+    const { result, calls } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: { window: "five_hour", status: "rejected" }, resetInMs: RESET_MS, afterSessions: 1, cutsSession: true },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(callsTo(calls, "runAttach").map(({ name }) => name), ["S1", "S1", "S2", "Close the branch"]);
+    const [cut] = callsTo(calls, "runSettle");
+    assert.deepEqual(cut, { runId: "run-1", sessionId: "session-1", outcome: "stopped", detail: "Cut short by the five_hour limit." });
+    const [wait] = waits(calls);
+    assert.match(wait.detail, /^Waiting for the five_hour limit to reset at /);
+    assert.ok(launchTimes(calls).slice(1).every((at) => at >= resetOf(wait)));
+  });
+
+  it("a session that fails at the reserve still counts as a failed attempt", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), {
+      args: AGENT,
+      quota: { reading: weekAt(0.96), resetInMs: RESET_MS, afterSessions: 1, cutsSession: true },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(callsTo(calls, "runAttach").map(({ name }) => name), ["S1", "S1 retry", "S2", "Close the branch"]);
+    assert.equal(callsTo(calls, "runSettle")[0].outcome, "failed");
+  });
+
+  it("a limit with no reset time halts waiting rather than guess, before any session", async () => {
+    const fixture = makeFixture();
+    const { result, calls } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: { window: "seven_day", status: "rejected" }, resetInMs: null },
+    });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /the seven_day limit was reached with no reset time; re-kick once it resets/);
+    assert.deepEqual(callsTo(calls, "sessionLaunch"), []);
+    assert.equal(callsTo(calls, "runEnd").at(-1).outcome, "waiting");
   });
 });
 
@@ -1320,5 +1525,219 @@ describe("run.mjs installs the worktree's dependencies before any session", () =
     assert.equal(second.result.status, 0, second.result.stderr);
     assert.match(second.result.stdout, /resuming in existing worktree/);
     assert.equal(readFileSync(second.pnpmLog, "utf8").split("\n").filter(Boolean).length, 1);
+  });
+});
+
+// Stands in for github.com over git's smart HTTP: git http-backend serves the
+// repositories under its root, and a push gets through only with the App
+// token, as a GitHub App installation's would. A separate process, because
+// the runner blocks in spawnSync while the test holds this end.
+const FAKE_GITHUB = `
+const { spawn } = require("node:child_process");
+const { appendFileSync } = require("node:fs");
+const { createServer } = require("node:http");
+const [root, logFile, token] = process.argv.slice(1);
+const expected = "Basic " + Buffer.from("x-access-token:" + token).toString("base64");
+const server = createServer((request, response) => {
+  const url = new URL(request.url, "http://localhost");
+  const pushing =
+    url.pathname.endsWith("/git-receive-pack") || url.searchParams.get("service") === "git-receive-pack";
+  const authorized = request.headers.authorization === expected;
+  appendFileSync(logFile, JSON.stringify({ path: url.pathname, pushing, authorized }) + "\\n");
+  if (pushing && !authorized) {
+    response.writeHead(401, { "WWW-Authenticate": 'Basic realm="fake-github"' });
+    return response.end();
+  }
+  const env = {
+    ...process.env,
+    GIT_PROJECT_ROOT: root,
+    GIT_HTTP_EXPORT_ALL: "1",
+    REQUEST_METHOD: request.method,
+    PATH_INFO: url.pathname,
+    QUERY_STRING: url.search.slice(1),
+    CONTENT_TYPE: request.headers["content-type"] ?? "",
+    HTTP_CONTENT_ENCODING: request.headers["content-encoding"] ?? "",
+    GIT_PROTOCOL: request.headers["git-protocol"] ?? "",
+    REMOTE_ADDR: "127.0.0.1",
+  };
+  if (authorized) env.REMOTE_USER = "x-access-token";
+  const backend = spawn("git", ["http-backend"], { env });
+  request.pipe(backend.stdin);
+  const chunks = [];
+  backend.stdout.on("data", (chunk) => chunks.push(chunk));
+  backend.on("close", () => {
+    const out = Buffer.concat(chunks);
+    const end = out.indexOf("\\r\\n\\r\\n");
+    let status = 200;
+    const headers = {};
+    for (const line of out.subarray(0, end).toString().split("\\r\\n")) {
+      const colon = line.indexOf(":");
+      const [key, value] = [line.slice(0, colon).trim(), line.slice(colon + 1).trim()];
+      if (key.toLowerCase() === "status") status = parseInt(value, 10);
+      else headers[key] = value;
+    }
+    response.writeHead(status, headers);
+    response.end(out.subarray(end + 4));
+  });
+});
+server.listen(0, "127.0.0.1", () => console.log(server.address().port));
+`;
+
+// Serves the fixture's origin as https://github.com/Dan86de/demo.git would be,
+// returning its URL and the log of every request with whether it carried the token.
+async function startFakeGithub(fixture) {
+  const root = path.join(fixture.tmp, "github");
+  mkdirSync(path.join(root, "Dan86de"), { recursive: true });
+  symlinkSync(path.join(fixture.tmp, "origin.git"), path.join(root, "Dan86de", "demo.git"));
+  const log = path.join(fixture.tmp, "github.log");
+  writeFileSync(log, "");
+  const server = spawn(process.execPath, ["-e", FAKE_GITHUB, root, log, "stub-app-token"], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const port = await new Promise((resolve) => server.stdout.once("data", (data) => resolve(String(data).trim())));
+  const requests = () =>
+    readFileSync(log, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  return { base: `http://127.0.0.1:${port}/`, requests, stop: () => server.kill() };
+}
+
+// A session inside a run's container: it commits, and has no credential to push with.
+const CONTAINER_STUB = CLAUDE_STUB.replaceAll('git("push", "--quiet", "origin", "HEAD");', "");
+
+// The last slice's session also plants what would run on the host if host git
+// ever ran in its tree: hooks, an fsmonitor and a filter, each leaving a marker.
+// Scoped to its worktree, as a container's own clone would hold them.
+const PLANTING_STUB = CONTAINER_STUB.replace(
+  '  git("commit", "--allow-empty", "-m", next.title + "\\n\\nProof.\\n\\n" + trailer);',
+  `  git("commit", "--allow-empty", "-m", next.title + "\\n\\nProof.\\n\\n" + trailer);
+  if (next.id === "S2") {
+    const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
+    const marks = process.env.STUB_MARKERS;
+    const hooks = marks + "-hooks";
+    mkdirSync(hooks, { recursive: true });
+    for (const hook of ["pre-push", "reference-transaction", "post-checkout", "post-merge", "pre-commit"]) {
+      writeFileSync(hooks + "/" + hook, "#!/bin/sh\\ntouch " + marks + "/hook-" + hook + "\\n");
+      chmodSync(hooks + "/" + hook, 0o755);
+    }
+    writeFileSync(hooks + "/fsmonitor", "#!/bin/sh\\ntouch " + marks + "/fsmonitor\\nexit 1\\n");
+    chmodSync(hooks + "/fsmonitor", 0o755);
+    git("config", "extensions.worktreeConfig", "true");
+    git("config", "--worktree", "core.hooksPath", hooks);
+    git("config", "--worktree", "core.fsmonitor", hooks + "/fsmonitor");
+    git("config", "--worktree", "filter.plant.clean", "touch " + marks + "/filter-clean; cat");
+    git("config", "--worktree", "filter.plant.smudge", "touch " + marks + "/filter-smudge; cat");
+    writeFileSync(git("rev-parse", "--git-path", "info/attributes"), "* filter=plant\\n");
+  }`,
+);
+
+describe("run.mjs pushes from a clone only the host writes, with the App's token", () => {
+  // What the bare origin itself holds on the slices branch, with no fetch in between.
+  const originTrailers = (fixture) =>
+    git(path.join(fixture.tmp, "origin.git"), "log", "--format=%(trailers:key=Slice,valueonly)", "main..slices/demo")
+      .split("\n")
+      .filter(Boolean)
+      .sort();
+  const hostClone = (fixture) => path.join(fixture.repo, ".git", "run-feature", "demo.git");
+
+  it("fetches each session's commits into its own clone and pushes them with the App token, hooks off", async () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    const github = await startFakeGithub(fixture);
+    git(fixture.repo, "remote", "set-url", "origin", `${github.base}Dan86de/demo.git`);
+    // A hook the shell's own git config points at runs on any push not given core.hooksPath=/dev/null.
+    const globalHooks = path.join(fixture.tmp, "global-hooks");
+    mkdirSync(globalHooks);
+    writeFileSync(path.join(globalHooks, "pre-push"), `#!/bin/sh\ntouch ${fixture.tmp}/global-pre-push\n`);
+    chmodSync(path.join(globalHooks, "pre-push"), 0o755);
+    const globalConfig = path.join(fixture.tmp, "gitconfig");
+    writeFileSync(globalConfig, `[core]\n\thooksPath = ${globalHooks}\n`);
+    try {
+      const { result, minterLog } = await runRunnerWithDaemon(fixture, { env: { GIT_CONFIG_GLOBAL: globalConfig } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(originTrailers(fixture), ["S1", "S2"]);
+      assert.equal(existsSync(hostClone(fixture)), false, "a clean finish deletes the host clone");
+      const minted = readFileSync(minterLog, "utf8").split("\n").filter(Boolean);
+      assert.ok(minted.length >= 3, minted.join("\n"));
+      assert.ok(minted.every((repository) => repository === "Dan86de/demo"), minted.join("\n"));
+      const pushes = github.requests().filter((request) => request.pushing);
+      assert.ok(pushes.length > 0);
+      assert.ok(pushes.every((request) => request.authorized), JSON.stringify(pushes));
+      assert.equal(existsSync(path.join(fixture.tmp, "global-pre-push")), false);
+      assert.doesNotMatch(readFileSync(path.join(fixture.repo, ".git", "config"), "utf8"), /stub-app-token|extraheader/i);
+    } finally {
+      github.stop();
+    }
+  });
+
+  it("pushes a GitHub SSH origin at its HTTPS address, past the user's own URL rewrites", async () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    const github = await startFakeGithub(fixture);
+    git(fixture.repo, "remote", "set-url", "origin", "git@github.com:Dan86de/demo.git");
+    // A push address of its own wins over the fetch address, in either SSH form.
+    git(fixture.repo, "config", "remote.origin.pushurl", "ssh://git@github.com/Dan86de/demo.git");
+    // Stands in for github.com: the SSH origin and its HTTPS address both reach
+    // the fake, and a push left at the SSH address lands nowhere.
+    const routes =
+      `'url.${github.base}.insteadof'='git@github.com:' ` +
+      `'url.${github.base}.insteadof'='https://github.com/' ` +
+      `'url.${github.base}nowhere/.pushinsteadof'='git@github.com:' ` +
+      `'url.${github.base}nowhere/.pushinsteadof'='ssh://git@github.com/'`;
+    // A user rule sending HTTPS pushes back to SSH, as many a git setup has.
+    const globalConfig = path.join(fixture.tmp, "gitconfig");
+    writeFileSync(globalConfig, `[url "${github.base}nowhere/"]\n\tpushInsteadOf = https://github.com/\n`);
+    try {
+      const { result, minterLog } = await runRunnerWithDaemon(fixture, {
+        env: { GIT_CONFIG_PARAMETERS: routes, GIT_CONFIG_GLOBAL: globalConfig },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(originTrailers(fixture), ["S1", "S2"]);
+      assert.match(readFileSync(minterLog, "utf8"), /^Dan86de\/demo$/m);
+      assert.ok(github.requests().every((request) => !request.path.startsWith("/nowhere/")));
+    } finally {
+      github.stop();
+    }
+  });
+
+  it("a hook, an fsmonitor and a filter planted in the session's tree run nowhere during the fetch and push", async () => {
+    // The close leaves the PR a draft, so the run halts before removing the
+    // worktree, whose clean check runs the tree's fsmonitor and filter as any status does.
+    const fixture = makeFixture(
+      PLANTING_STUB.replace('  execFileSync("gh", ["pr", "ready", "demo"]);', ""),
+    );
+    const marks = path.join(fixture.tmp, "markers");
+    mkdirSync(marks);
+    const { result } = await runRunnerWithDaemon(fixture, { env: { STUB_MARKERS: marks } });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /halt: the close session did not finish: the PR is still a draft/);
+    assert.deepEqual(originTrailers(fixture), ["S1", "S2"]);
+    assert.deepEqual(readdirSync(marks), []);
+    // The planted items were live: git run in that tree trips every one.
+    writeFileSync(path.join(fixture.worktree, "spec", "features", "demo", "spec.md"), "# demo, edited\n");
+    git(fixture.worktree, "add", "spec/features/demo/spec.md");
+    git(fixture.worktree, "commit", "--quiet", "-m", "planted hooks fire");
+    assert.deepEqual(readdirSync(marks).sort(), ["filter-clean", "fsmonitor", "hook-pre-commit", "hook-reference-transaction"]);
+  });
+
+  it("without a minter on PATH, pushes from the host clone with the shell's own credential, and says so", () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    rmSync(path.join(fixture.bin, "github-app-token"));
+    const { result } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(originTrailers(fixture), ["S1", "S2"]);
+    const said = result.stdout.split("\n").filter((line) => line.includes("no github-app-token on PATH"));
+    assert.equal(said.length, 1, result.stdout);
+  });
+
+  it("a minter that fails halts as push refused with its reason, and pushes nothing", () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    const { result, osaLog } = runRunner(fixture, { STUB_MINTER_FAIL: "1" });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(
+      result.stderr,
+      /halt: github-app-token gave no token for [^:]+: the App is not installed on this repository; fix the minter, then re-kick/,
+    );
+    assert.deepEqual(bannerPayloads(osaLog), ["push refused"]);
+    assert.equal(spawnSync("git", ["-C", path.join(fixture.tmp, "origin.git"), "rev-parse", "--verify", "--quiet", "slices/demo"]).status, 1);
   });
 });

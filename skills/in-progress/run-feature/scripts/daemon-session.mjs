@@ -5,6 +5,7 @@
 //        daemon-session.mjs run-steps <run-id> <steps-json>
 //        daemon-session.mjs run-settle <run-id> <session-id> <outcome> [detail]
 //        daemon-session.mjs run-end <run-id> <outcome> [detail]
+//        daemon-session.mjs quota                                prints the latest rate-limit reading as JSON, or nothing
 //        daemon-session.mjs session <cwd> <prompt> <system-prompt-note> <name> <task> <result-file> [run-id] [parent-session-id] [step-id]
 // A session writes its id to <result-file>, then the run shows it live.
 // run-start names the session it was kicked from, AGENTS_HQ_SESSION_ID, as the run's launcher.
@@ -174,6 +175,9 @@ async function main() {
   if (command === "run-settle") {
     const [runId, sessionId, outcome, detail] = args;
     return runCall("runSettle", { runId, sessionId, outcome, ...(detail ? { detail } : {}) });
+  }
+  if (command === "quota") {
+    return runCall("ping", {}, (info) => (info.quota === undefined ? "" : JSON.stringify(info.quota)));
   }
   if (command === "run-end") {
     const [runId, outcome, detail] = args;
