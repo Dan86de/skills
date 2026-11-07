@@ -2,11 +2,13 @@
 // run-feature: loop implement-slice sessions in a dedicated worktree until
 // every slice of a feature is committed and the branch is closed.
 // State is read only from git trailers and slices.json, never from harness stdout.
-// The one exception is closeGap, which asks gh whether the PR left draft.
+// The one exception is closeGap, which asks GitHub whether the PR left draft.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -31,6 +33,14 @@ const RESET_MARGIN_MS = 1000;
 
 // Prints a 1-hour GitHub App token for the <owner>/<repo> it is given.
 const TOKEN_MINTER = "github-app-token";
+
+// The PR as sessions see it, at the worktree's root and kept out of git: no
+// session holds a GitHub credential, so each reads the PR here and writes the
+// changes it wants, which the runner applies once it has pushed the session's work.
+const PR_DIR = ".run-feature";
+const PR_FILE = path.join(PR_DIR, "pr.json");
+// The only labels a session may set, as implement-slice and pr-brief touch no others.
+const PR_LABEL_PREFIX = "attention: ";
 
 // The Bash allowlist seeded into a project that has no committed Claude
 // settings yet. The headless sessions skip the permission system entirely;
@@ -295,13 +305,13 @@ function hostClone(repo, slug) {
 
 // The App's token, or null when no minter is installed; a minter that fails is
 // a halt, never a push with some other credential.
-function mintToken(repository, worktree) {
+function mintToken(repository, worktree, state) {
   const result = spawnSync(TOKEN_MINTER, [repository], { encoding: "utf8" });
   if (result.error?.code === "ENOENT") return null;
   const token = result.stdout?.trim() ?? "";
   if (result.status !== 0 || token === "") {
     const cause = result.error?.message || result.stderr?.trim() || `it exited with ${result.status}`;
-    halt("push refused", `${TOKEN_MINTER} gave no token for ${repository}: ${cause}; fix the minter, then re-kick`, worktree);
+    halt(state, `${TOKEN_MINTER} gave no token for ${repository}: ${cause}; fix the minter, then re-kick`, worktree);
   }
   return token;
 }
@@ -321,7 +331,7 @@ function publish({ worktree, clone, slug, origin }) {
   const fetched = spawnSync("git", ["-C", clone, ...fetch], { encoding: "utf8" });
   if (fetched.status !== 0) fail(`could not fetch slices/${slug} from ${worktree}: ${fetched.stderr.trim()}`);
   const app = appRemote(origin);
-  const token = mintToken(app.repository, worktree);
+  const token = mintToken(app.repository, worktree, "push refused");
   if (token === null) {
     if (!warnedNoMinter) log(`push: no ${TOKEN_MINTER} on PATH, so pushes use this shell's own git credential`);
     warnedNoMinter = true;
@@ -357,6 +367,144 @@ function appRemote(url) {
   const ssh = url.match(/^(?:ssh:\/\/)?git@github\.com[:/](.+?)(?:\.git)?\/?$/);
   if (ssh) return { repository: ssh[1], url: `https://github.com/${ssh[1]}.git` };
   return { repository: url.replace(/\.git\/?$/, "").split(/[/:]/).slice(-2).join("/"), url };
+}
+
+// One gh call on the slices branch's PR, as the App when a minter is installed
+// and with the shell's own gh login otherwise. It runs outside the worktree, so
+// no git that gh starts reads the session's config.
+function github(remote, token, args, doing, input) {
+  const env = token === null ? process.env : { ...process.env, GH_TOKEN: token };
+  const result = spawnSync("gh", [...args, "--repo", remote.repository], {
+    cwd: os.tmpdir(),
+    encoding: "utf8",
+    env,
+    input,
+  });
+  if (result.status === 0) return result.stdout;
+  const cause = result.error?.message || (result.stderr || result.stdout || "").trim() || `gh exited with ${result.status}`;
+  halt("pr refused", `gh refused ${doing}: ${cause}; fix it, then re-kick`, remote.worktree);
+}
+
+function prToken(remote) {
+  return mintToken(remote.repository, remote.worktree, "pr refused");
+}
+
+// The open PR from slices/<slug>, or null when none is open.
+function findPr(remote, token) {
+  const doing = `reading the PR for slices/${remote.slug}`;
+  const printed = github(
+    remote,
+    token,
+    ["pr", "list", "--head", `slices/${remote.slug}`, "--state", "open", "--limit", "1", "--json", "number,url,title,body,labels,isDraft"],
+    doing,
+  );
+  let prs;
+  try {
+    prs = JSON.parse(printed);
+  } catch {
+    prs = undefined;
+  }
+  if (!Array.isArray(prs)) halt("pr refused", `gh gave no PR list ${doing}; fix it, then re-kick`, remote.worktree);
+  const [pr] = prs;
+  return pr ? { ...pr, labels: pr.labels.map((label) => label.name) } : null;
+}
+
+// Removes what stands at the PR file's place before the runner writes there, so
+// a link a session left cannot point the write at a file outside the worktree;
+// a link itself is removed, never what it points at.
+function clearPrFile(worktree) {
+  rmSync(path.join(worktree, PR_DIR), { recursive: true, force: true });
+}
+
+// Hands the next session the PR as GitHub has it, with the repository and base
+// a new PR needs; number and url stay null until a session opens one.
+function writePrFile(remote) {
+  const pr = findPr(remote, prToken(remote));
+  clearPrFile(remote.worktree);
+  mkdirSync(path.join(remote.worktree, PR_DIR), { recursive: true });
+  const file = {
+    repository: remote.repository,
+    base: remote.base,
+    head: `slices/${remote.slug}`,
+    number: pr?.number ?? null,
+    url: pr?.url ?? null,
+    title: pr?.title ?? null,
+    body: pr?.body ?? null,
+    labels: pr?.labels ?? [],
+    draft: pr?.isDraft ?? true,
+  };
+  writeFileSync(path.join(remote.worktree, PR_FILE), JSON.stringify(file, null, 2) + "\n", { flag: "wx" });
+}
+
+// What the session wants of the PR, read only when the file is a plain file
+// inside the worktree, so a link cannot have the runner post a host file.
+function readPrFile(worktree) {
+  const file = path.join(worktree, PR_FILE);
+  if (!existsSync(file)) return null;
+  const expected = path.join(realpathSync(worktree), PR_FILE);
+  if (realpathSync(file) !== expected || !lstatSync(file).isFile()) {
+    halt("pr refused", `${PR_FILE} in the worktree is not a plain file; remove it, then re-kick`, worktree);
+  }
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    halt("pr refused", `${PR_FILE} in the worktree is not valid JSON: ${error.message}; fix it, then re-kick`, worktree);
+  }
+}
+
+// Applies the session's PR file after its work is pushed: opens the PR as a
+// draft, rewrites its body, sets its attention labels and marks it ready.
+function applyPr(remote) {
+  const wanted = readPrFile(remote.worktree);
+  if (wanted === null) return;
+  const token = prToken(remote);
+  let pr = findPr(remote, token);
+  if (pr === null) {
+    if (typeof wanted.title !== "string" || wanted.title === "") return;
+    github(
+      remote,
+      token,
+      ["pr", "create", "--draft", "--base", remote.base, "--head", `slices/${remote.slug}`, "--title", wanted.title, "--body-file", "-"],
+      `opening the PR for slices/${remote.slug}`,
+      wanted.body ?? "",
+    );
+    pr = findPr(remote, token);
+    if (pr === null) halt("pr refused", `gh opened no PR for slices/${remote.slug}; re-kick`, remote.worktree);
+    log(`pr: opened ${pr.url} as a draft`);
+  }
+  if (typeof wanted.body === "string" && wanted.body !== pr.body) {
+    github(remote, token, ["pr", "edit", String(pr.number), "--body-file", "-"], `editing the PR body`, wanted.body);
+  }
+  if (Array.isArray(wanted.labels)) {
+    const attention = (labels) => labels.filter((label) => typeof label === "string" && label.startsWith(PR_LABEL_PREFIX));
+    const add = attention(wanted.labels).filter((label) => !pr.labels.includes(label));
+    const remove = attention(pr.labels).filter((label) => !wanted.labels.includes(label));
+    if (add.length > 0) {
+      const existing = JSON.parse(github(remote, token, ["label", "list", "--limit", "1000", "--json", "name"], "listing labels"));
+      for (const label of add.filter((name) => !existing.some((entry) => entry.name === name))) {
+        github(remote, token, ["label", "create", label], `creating the label ${label}`);
+      }
+    }
+    if (add.length > 0 || remove.length > 0) {
+      const flags = [...add.flatMap((label) => ["--add-label", label]), ...remove.flatMap((label) => ["--remove-label", label])];
+      github(remote, token, ["pr", "edit", String(pr.number), ...flags], "setting the PR's attention label");
+    }
+  }
+  if (wanted.draft === false && pr.isDraft) {
+    github(remote, token, ["pr", "ready", String(pr.number)], "marking the PR ready");
+    log(`pr: marked ${pr.url} ready`);
+  }
+}
+
+// Keeps the PR file out of every checkout's status, so it is never committed
+// and a tree holding it still reads clean.
+function excludePrFile(repo) {
+  const exclude = git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]);
+  const line = `/${PR_DIR}/`;
+  const current = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
+  if (current.split("\n").includes(line)) return;
+  mkdirSync(path.dirname(exclude), { recursive: true });
+  appendFileSync(exclude, `${current === "" || current.endsWith("\n") ? "" : "\n"}${line}\n`);
 }
 
 // The lockfile names the package manager, and its frozen install is the one
@@ -452,7 +600,7 @@ function knownFailures(worktree, base) {
 // finishing, so "complete" is only reported on what it actually left behind.
 // A hitl slice's manual items were confirmed through sign-off, so only the
 // other slices' items need the checklist.
-function closeGap({ worktree, base, slices, slug, hasOrigin }) {
+function closeGap({ worktree, base, slices, remote }) {
   const needsChecks = slices.some(
     (slice) => slice.autonomy !== "hitl" && slice.done?.manual?.length > 0,
   );
@@ -464,19 +612,10 @@ function closeGap({ worktree, base, slices, slug, hasOrigin }) {
     ]);
     if (trailers === "") return "no commit with a Manual-Checks trailer, so the PR has no checklist";
   }
-  if (!hasOrigin) return null;
-  const view = spawnSync("gh", ["pr", "view", `slices/${slug}`, "--json", "isDraft"], {
-    cwd: worktree,
-    encoding: "utf8",
-  });
-  let isDraft;
-  try {
-    ({ isDraft } = JSON.parse(view.stdout));
-  } catch {
-    isDraft = undefined;
-  }
-  if (typeof isDraft !== "boolean") return `could not confirm the PR state through gh for slices/${slug}`;
-  return isDraft ? "the PR is still a draft" : null;
+  if (remote === null) return null;
+  const pr = findPr(remote, prToken(remote));
+  if (pr === null) return `no open PR for slices/${remote.slug}`;
+  return pr.isDraft ? "the PR is still a draft" : null;
 }
 
 function quoteArg(arg) {
@@ -490,6 +629,17 @@ const HEADLESS_NOTE =
   "This session runs headlessly inside a run-feature run: no human can answer mid-run. " +
   "Never end the turn asking a question or waiting for input; " +
   "settle every open choice with the default you would otherwise propose, note it, and finish the task.";
+
+// Appended after the headless note: the session pushes nothing and touches the
+// PR only through the PR file, which the runner applies as the GitHub App.
+const PR_NOTE =
+  "run-feature owns this branch's pushes and pull request, so never run `git push` or `gh`: " +
+  "after the session the runner pushes HEAD, then applies `.run-feature/pr.json` at the worktree root, which git ignores. " +
+  "That file holds the PR: `repository` (owner/name), `base`, `head`, `number` and `url` (null until it is opened), " +
+  "`title`, `body`, `labels` and `draft`. Read the PR from it, and change the PR by writing the file back: " +
+  "set `title`, `body` and `draft: true` to open it, rewrite `body` to edit it, list its `attention:` labels in `labels`, " +
+  "and set `draft` to false to mark it ready. The PR's head is HEAD once the runner has pushed.";
+const LOCAL_NOTE = "This run has no remote, so never run `git push` or `gh`; there is no PR.";
 
 const DAEMON_SESSION = fileURLToPath(new URL("./daemon-session.mjs", import.meta.url));
 const DAEMON_LOST = 1;
@@ -624,7 +774,7 @@ async function waitOutQuota(worktree) {
 
 // Through the local agents-hq daemon when one can take it, so it shows on the Runs page and
 // can be stopped there; otherwise directly, outside agents-hq, with no session id to return.
-async function runHarnessSession({ worktree, prompt, label, name, task, parent, stepId }) {
+async function runHarnessSession({ worktree, prompt, note, label, name, task, parent, stepId }) {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
   const resultFile = path.join(scratch, "session-id");
   const viaDaemon = await waitFor(
@@ -634,7 +784,7 @@ async function runHarnessSession({ worktree, prompt, label, name, task, parent, 
       "session",
       worktree,
       prompt,
-      HEADLESS_NOTE,
+      note,
       name,
       task,
       resultFile,
@@ -665,7 +815,7 @@ async function runHarnessSession({ worktree, prompt, label, name, task, parent, 
     return sessionId;
   }
   log(`${label}: running outside agents-hq, as no agents-hq daemon can take it`);
-  await runClaudeSession({ worktree, prompt, label });
+  await runClaudeSession({ worktree, prompt, note, label });
   return undefined;
 }
 
@@ -674,8 +824,8 @@ async function runHarnessSession({ worktree, prompt, label, name, task, parent, 
 // push, so sessions skip the permission system instead of stalling behind an
 // allowlist. stdout and stderr stream straight to the terminal and are never
 // captured.
-async function runClaudeSession({ worktree, prompt, label }) {
-  const args = ["-p", prompt, "--dangerously-skip-permissions", "--append-system-prompt", HEADLESS_NOTE];
+async function runClaudeSession({ worktree, prompt, note, label }) {
+  const args = ["-p", prompt, "--dangerously-skip-permissions", "--append-system-prompt", note];
   log(`${label}: claude ${args.map(quoteArg).join(" ")}`);
   const result = await waitFor("claude", args, {
     cwd: worktree,
@@ -768,18 +918,26 @@ async function main() {
   }
 
   const remote = hasOrigin
-    ? { worktree, slug, clone: hostClone(repo, slug), origin: originUrl(repo) }
+    ? { worktree, slug, base: branch, clone: hostClone(repo, slug), origin: originUrl(repo) }
     : null;
+  if (remote) {
+    remote.repository = appRemote(remote.origin).repository;
+    excludePrFile(repo);
+  }
+  const note = `${HEADLESS_NOTE} ${remote ? PR_NOTE : LOCAL_NOTE}`;
   const push = () => {
     if (remote) publish(remote);
   };
   ensureSettings(worktree, push);
 
-  // A session never pushes for the run: whatever it committed is published here.
+  // A session never pushes or reaches GitHub for the run: whatever it committed
+  // is published here, and then the PR it asked for.
   const session = async (prompt, label, member) => {
     if (agentAccount) await waitOutQuota(worktree);
-    const sessionId = await runHarnessSession({ worktree, prompt, label, ...member });
+    if (remote) writePrFile(remote);
+    const sessionId = await runHarnessSession({ worktree, prompt, note, label, ...member });
     push();
+    if (remote) applyPr(remote);
     return sessionId;
   };
 
@@ -819,7 +977,7 @@ async function main() {
     if (allDone && closeRan) {
       const known = knownFailures(worktree, base);
       // A known failure leaves the PR a draft on purpose, so only the checklist is checked.
-      const gap = closeGap({ worktree, base, slices, slug, hasOrigin: hasOrigin && known.length === 0 });
+      const gap = closeGap({ worktree, base, slices, remote: known.length === 0 ? remote : null });
       settleSession(closeSession, gap ? "failed" : "completed", gap);
       if (gap) {
         halt("close incomplete", `the close session did not finish: ${gap}; fix it or re-kick`, worktree);
@@ -832,6 +990,7 @@ async function main() {
           { outcome: "waiting" },
         );
       }
+      clearPrFile(worktree);
       removeWorktree(repo, worktree);
       if (remote) rmSync(remote.clone, { recursive: true, force: true });
       board.outcome = "completed";

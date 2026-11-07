@@ -38,10 +38,16 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - Pushes `slices/<slug>` itself after every session and every file it commits, never from the worktree.
   A bare clone at `.git/run-feature/<slug>.git` in the repo, which only the host writes, fetches the branch from the worktree, which runs none of the worktree's hooks, config or filters, and pushes it with `core.hooksPath=/dev/null`.
   The push carries a 1-hour GitHub App token printed by `github-app-token <owner>/<repo>` on `PATH`, goes to origin's HTTPS address even for a GitHub SSH remote, and leaves the user's and the system's git config files out, so no URL rewrite or stored login in them stands in for the App.
+  `scripts/github-app-token.mjs` is that minter: it signs as the App with the ID in `~/.config/agents-hq/github-app-id` and the key in `~/.config/agents-hq/github-app.pem`, and narrows each token to the one repository.
   A minter that fails halts as `push refused`.
   A clean finish deletes that clone with the worktree; a halt keeps both.
   With no minter on `PATH`, the push uses the shell's own git credential and the script says so once.
   Between sessions it fetches nothing into the worktree, since a fetch there runs the worktree's own fsmonitor and hooks.
+- Owns the PR, so no session runs `gh` or `git push`, and every session's system prompt says so and names the PR file.
+  Before each session it writes the PR as GitHub has it to `.run-feature/pr.json` at the worktree's root, kept out of git through the repo's `info/exclude`, with `number` null until the PR is opened.
+  After the session's push it applies what the session wrote there: it opens the PR as a draft from `title` and `body`, rewrites the body, sets the `attention:` labels, creating any that are missing, and marks the PR ready once `draft` is false; other labels are ignored.
+  It calls `gh` with the App's token as `GH_TOKEN`, or with the shell's own gh login when no minter is installed.
+  A PR file that is a link or not JSON, or a `gh` call that fails, halts as `pr refused`.
 - Writes a missing spec or slices file through a headless write-spec or write-slices session and commits it to the slices branch before the loop starts.
 - Seeds a project that has no committed `.claude/settings.json` with a default Bash allowlist and commits it before any session, a baseline for the attended sessions a human runs in a kept worktree.
 - Runs each slice attempt as a fresh `/implement-slice spec/features/<slug>/` session with full access: the worktree is dedicated and the loop is already trusted to commit and push, so an allowlist would only stall it.
@@ -55,7 +61,7 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - Between iterations it decides from `git log` trailers and `slices.json` alone, never from session stdout.
 - A slice with only `done.manual` items is `afk`: it commits as done, so its dependents and the close carry on, and its checks wait for a person in the ready PR's `## Before you merge`.
 - After the last slice it runs one more session so implement-slice closes the branch and marks the PR ready.
-- It trusts that close only after checking it: a commit with a `Manual-Checks:` trailer when an `afk` slice has `done.manual` items, and the PR out of draft through `gh`, the one thing read from outside git.
+- It trusts that close only after checking it: a commit with a `Manual-Checks:` trailer when an `afk` slice has `done.manual` items, and the PR out of draft, the one thing read from outside git.
   With no `origin`, the trailer check runs alone.
   Either failing is a `close incomplete` halt.
   A close whose newest `Address review` commit carries a `Known-Failure:` trailer is a `known failure` halt instead: a proven bug it could not fix, left in a draft PR for a person.

@@ -98,4 +98,5 @@ The slice and its state, the commit and PR, the verify run, the review's `Open` 
 ## Guardrails
 
 Push only to `slices/<slug>`, edit only its PR's body and `attention:` labels, and never force push or merge.
+When the system prompt names a run-feature PR file, push nothing and run no `gh`: read the PR from that file, and open it, edit it and mark it ready by writing the file, as the prompt says.
 The slices file, the spec, and what the feature map already says are read-only, and every proof prove-change handed over is edited only by a known failure's mark and deleted only per [references/proving.md](references/proving.md).

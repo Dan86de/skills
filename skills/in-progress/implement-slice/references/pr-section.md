@@ -46,7 +46,7 @@ Verify run `<run id>` · reviewed <n> files against <standards file names>
 - **Stands**: each `stands` finding as `<link> <rule or smell>: <why>. Kept: <stands reason>`.
 - **Fixed in review**: each `Fixed` line and each `fixed` `Open` line as `<link> <what changed>`.
 - **Links**: each `file:line` becomes `[<file name>:<line>](https://github.com/<owner>/<repo>/blob/<full SHA>/<path>#L<line>)`, pinned to the slice's commit so later slices do not shift the lines.
-  The commit URL is `https://github.com/<owner>/<repo>/commit/<full SHA>`, the spec URL is the spec file's blob URL at that commit, and `<owner>/<repo>` comes from `gh repo view --json nameWithOwner`.
+  The commit URL is `https://github.com/<owner>/<repo>/commit/<full SHA>`, the spec URL is the spec file's blob URL at that commit, and `<owner>/<repo>` comes from `gh repo view --json nameWithOwner`, or the run-feature PR file's `repository`.
 - **Empty parts**: leave out a heading whose list is empty and the `Outside the diff` line when it is `none`.
   The section never says `none`; a slice with nothing for the reader is its two top lines and the folded proof.
 

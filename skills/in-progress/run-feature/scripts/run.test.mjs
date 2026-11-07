@@ -2,7 +2,8 @@
 // throwaway target repo with a stub harness and gh on PATH.
 // Covers slices S1 through S6 of spec/features/run-feature/spec.md, the
 // refusal to start sessions on the host without --on-host, the agent
-// account's quota brake, and the push from a host-owned clone with an App token.
+// account's quota brake, the push from a host-owned clone with an App token,
+// and the PR the runner opens and readies as the App from the sessions' PR file.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -39,10 +40,11 @@ const SLICES = {
 
 const CLAUDE_STUB = `#!/usr/bin/env node
 // Stands in for a headless implement-slice session: commits the next ready
-// slice's trailer (Slice-Pending for a hitl slice) and pushes, or marks the
-// PR ready once every slice is done.
+// slice's trailer (Slice-Pending for a hitl slice), pushes, and opens the PR
+// or adds the slice to its body through the PR file, or marks the PR ready
+// once every slice is done.
 // Extensionless file, so Node parses it as CommonJS.
-const { appendFileSync, readFileSync } = require("node:fs");
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 appendFileSync(process.env.STUB_CLAUDE_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
 // Misleading noise: a runner parsing harness stdout for state would halt here.
@@ -60,6 +62,11 @@ if (prompt.startsWith("/write-slices")) {
   process.exit(0);
 }
 const git = (...a) => execFileSync("git", a, { encoding: "utf8" }).trim();
+const pr = (change) => {
+  if (!existsSync(".run-feature/pr.json")) return;
+  writeFileSync(".run-feature/pr.json", JSON.stringify(change(JSON.parse(readFileSync(".run-feature/pr.json", "utf8")))));
+};
+const markReady = () => pr((file) => ({ ...file, labels: ["attention: skim"], draft: false }));
 const slices = JSON.parse(readFileSync("spec/features/demo/slices.json", "utf8")).slices;
 const read = (key) =>
   new Set(
@@ -78,23 +85,59 @@ if (!next) {
     git("commit", "--allow-empty", "-m", "Manual checks\\n\\n- S1: Looks right\\n\\nManual-Checks: 1");
     git("push", "--quiet", "origin", "HEAD");
   }
-  execFileSync("gh", ["pr", "ready", "demo"]);
+  markReady();
 } else {
   const trailer = (next.autonomy === "hitl" ? "Slice-Pending: " : "Slice: ") + next.id;
   git("commit", "--allow-empty", "-m", next.title + "\\n\\nProof.\\n\\n" + trailer);
   git("push", "--quiet", "origin", "HEAD");
+  pr((file) =>
+    file.number === null
+      ? { ...file, title: "demo", body: "## Slices\\n\\n" + next.id, draft: true }
+      : { ...file, body: file.body + "\\n" + next.id },
+  );
 }
 `;
 
 const GH_STUB = `#!/usr/bin/env node
-// Answers pr view from whether this run already logged a pr ready.
-const { appendFileSync, readFileSync } = require("node:fs");
-const args = process.argv.slice(2).join(" ");
-if (args.startsWith("pr view")) {
-  const log = readFileSync(process.env.STUB_GH_LOG, "utf8");
-  console.log(JSON.stringify({ isDraft: !log.includes("pr ready") }));
+// Stands in for GitHub's PRs and labels, kept in a state file beside the log,
+// and logs each call with the token it carried.
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("node:fs");
+const argv = process.argv.slice(2);
+appendFileSync(process.env.STUB_GH_LOG, argv.join(" ") + " [token " + (process.env.GH_TOKEN || "none") + "]\\n");
+const stateFile = process.env.STUB_GH_LOG + ".state";
+const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, "utf8")) : { pr: null, labels: [] };
+const save = () => writeFileSync(stateFile, JSON.stringify(state));
+const flag = (name) => argv[argv.indexOf(name) + 1];
+const flags = (name) => argv.flatMap((arg, i) => (arg === name ? [argv[i + 1]] : []));
+const command = argv.slice(0, 2).join(" ");
+if (command === "pr list") {
+  console.log(JSON.stringify(state.pr ? [{ ...state.pr, labels: state.pr.labels.map((name) => ({ name })) }] : []));
+} else if (command === "pr create") {
+  const url = "https://github.com/" + flag("--repo") + "/pull/1";
+  const body = readFileSync(0, "utf8");
+  state.pr = { number: 1, url, title: flag("--title"), body, labels: [], isDraft: true, base: flag("--base"), head: flag("--head") };
+  save();
+  console.log(url);
+} else if (command === "pr edit") {
+  if (argv.includes("--body-file")) state.pr.body = readFileSync(0, "utf8");
+  for (const label of flags("--add-label")) {
+    if (!state.labels.includes(label)) {
+      console.error("could not add label: '" + label + "' not found");
+      process.exit(1);
+    }
+    state.pr.labels.push(label);
+  }
+  state.pr.labels = state.pr.labels.filter((label) => !flags("--remove-label").includes(label));
+  save();
+} else if (command === "pr ready") {
+  state.pr.isDraft = false;
+  save();
+} else if (command === "label list") {
+  console.log(JSON.stringify(state.labels.map((name) => ({ name }))));
+} else if (command === "label create") {
+  state.labels.push(argv[2]);
+  save();
 }
-appendFileSync(process.env.STUB_GH_LOG, args + "\\n");
 `;
 
 // Close sessions that end early, each leaving a different part undone.
@@ -103,17 +146,17 @@ const CLOSE_SKIPS_CHECKS_STUB = CLAUDE_STUB.replace(
   'if (false) git("commit", "--allow-empty", "-m", "Manual checks',
 );
 const CLOSE_STAYS_DRAFT_STUB = CLAUDE_STUB.replace(
-  '  execFileSync("gh", ["pr", "ready", "demo"]);',
+  '  markReady();',
   '  console.log("close session stopped before marking the PR ready");',
 );
 // A close that commits a proven bug it could not fix and leaves the PR a
 // draft, and the later close that fixes it.
 const closeCommitting = (message, ready) =>
   CLAUDE_STUB.replace(
-    '  execFileSync("gh", ["pr", "ready", "demo"]);',
+    '  markReady();',
     `  git("commit", "--allow-empty", "-m", ${JSON.stringify(message)});
   git("push", "--quiet", "origin", "HEAD");
-${ready ? '  execFileSync("gh", ["pr", "ready", "demo"]);' : ""}`,
+${ready ? '  markReady();' : ""}`,
   );
 const KNOWN_FAILURE_STUB = closeCommitting(
   "Address review\n\nProved: Q2 => stands: known failure\n\nKnown-Failure: Q2",
@@ -704,12 +747,13 @@ describe("run.mjs defers manual checks to the ready PR", () => {
     assert.ok(existsSync(fixture.worktree), "worktree should be kept");
   });
 
-  it("a PR state gh cannot report halts rather than claiming success", () => {
+  it("a PR gh cannot read halts as pr refused rather than claiming success", () => {
     const fixture = makeFixture();
-    writeFileSync(path.join(fixture.bin, "gh"), "#!/usr/bin/env node\nprocess.exit(1);\n");
-    const { result } = runRunner(fixture);
+    writeFileSync(path.join(fixture.bin, "gh"), "#!/usr/bin/env node\nconsole.error('HTTP 502');\nprocess.exit(1);\n");
+    const { result, osaLog } = runRunner(fixture);
     assert.equal(result.status, 2, result.stderr);
-    assert.match(result.stderr, /could not confirm the PR state/);
+    assert.match(result.stderr, /halt: gh refused reading the PR for slices\/demo: HTTP 502/);
+    assert.deepEqual(bannerPayloads(osaLog), ["pr refused"]);
     assert.ok(existsSync(fixture.worktree), "worktree should be kept");
   });
 
@@ -959,9 +1003,9 @@ describe("run.mjs fires one end-state banner", () => {
     // The close pass leaves an untracked file, so the worktree removal on
     // clean completion fails and that halt's banner gets exercised too.
     const dirtyCloseStub = CLAUDE_STUB.replace(
-      '  execFileSync("gh", ["pr", "ready", "demo"]);',
+      '  markReady();',
       `  require("node:fs").writeFileSync("leftover.txt", "dirt");
-  execFileSync("gh", ["pr", "ready", "demo"]);`,
+  markReady();`,
     );
     const cases = [
       ["complete", makeFixture()],
@@ -1275,10 +1319,19 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
       const runner = spawn("node", [RUNNER, ...ON_HOST], {
         cwd: fixture.repo,
         stdio: "ignore",
-        env: { ...process.env, ...daemonEnv, AGENTS_HQ_SESSION_ID: undefined, PATH: `${fixture.bin}:${process.env.PATH}` },
+        env: {
+          ...process.env,
+          ...daemonEnv,
+          AGENTS_HQ_SESSION_ID: undefined,
+          PATH: `${fixture.bin}:${process.env.PATH}`,
+          STUB_GH_LOG: path.join(fixture.tmp, "gh.log"),
+          STUB_MINTER_LOG: path.join(fixture.tmp, "minter.log"),
+        },
       });
-      const exited = new Promise((resolve) => runner.once("exit", resolve));
+      let ended = false;
+      const exited = new Promise((resolve) => runner.once("exit", resolve)).finally(() => (ended = true));
       while (!readFileSync(daemonLog, "utf8").includes("sessionLaunch")) {
+        assert.ok(!ended, "the runner exited before launching a session");
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       runner.kill("SIGTERM");
@@ -1703,7 +1756,7 @@ describe("run.mjs pushes from a clone only the host writes, with the App's token
     // The close leaves the PR a draft, so the run halts before removing the
     // worktree, whose clean check runs the tree's fsmonitor and filter as any status does.
     const fixture = makeFixture(
-      PLANTING_STUB.replace('  execFileSync("gh", ["pr", "ready", "demo"]);', ""),
+      PLANTING_STUB.replace('  markReady();', ""),
     );
     const marks = path.join(fixture.tmp, "markers");
     mkdirSync(marks);
@@ -1730,7 +1783,8 @@ describe("run.mjs pushes from a clone only the host writes, with the App's token
   });
 
   it("a minter that fails halts as push refused with its reason, and pushes nothing", () => {
-    const fixture = makeFixture(CONTAINER_STUB);
+    // Seeding the settings pushes before any session, so the push is the minter's first use.
+    const fixture = makeFixture(CONTAINER_STUB, SLICES, { settingsFile: false });
     const { result, osaLog } = runRunner(fixture, { STUB_MINTER_FAIL: "1" });
     assert.equal(result.status, 2, result.stderr);
     assert.match(
@@ -1739,5 +1793,118 @@ describe("run.mjs pushes from a clone only the host writes, with the App's token
     );
     assert.deepEqual(bannerPayloads(osaLog), ["push refused"]);
     assert.equal(spawnSync("git", ["-C", path.join(fixture.tmp, "origin.git"), "rev-parse", "--verify", "--quiet", "slices/demo"]).status, 1);
+  });
+});
+
+describe("run.mjs opens and readies the PR as the App, and no session calls gh", () => {
+  // Every gh call with the token it carried, and GitHub's final state of the PR.
+  const ghCalls = (ghLog) => readFileSync(ghLog, "utf8").split("\n").filter(Boolean);
+  const ghState = (ghLog) => JSON.parse(readFileSync(`${ghLog}.state`, "utf8"));
+
+  it("opens the PR as a draft from the first session's file, writes each body, sets the attention label and marks it ready, all with the App token", async () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    // Each session records the PR file it was handed.
+    const seen = path.join(fixture.tmp, "seen.log");
+    writeFileSync(
+      path.join(fixture.bin, "claude"),
+      CONTAINER_STUB.replace(
+        "const slices = JSON.parse(",
+        `if (existsSync(".run-feature/pr.json")) appendFileSync(${JSON.stringify(seen)}, readFileSync(".run-feature/pr.json", "utf8").replace(/\\n/g, " ") + "\\n");
+const slices = JSON.parse(`,
+      ),
+    );
+    const { result, ghLog, calls } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 0, result.stderr);
+
+    const pr = ghState(ghLog).pr;
+    assert.equal(pr.title, "demo");
+    assert.equal(pr.body, "## Slices\n\nS1\nS2");
+    assert.deepEqual(pr.labels, ["attention: skim"]);
+    assert.equal(pr.isDraft, false);
+    assert.equal(pr.base, "main");
+    assert.equal(pr.head, "slices/demo");
+
+    const gh = ghCalls(ghLog);
+    assert.ok(gh.length > 0);
+    assert.ok(gh.every((call) => call.endsWith("[token stub-app-token]")), gh.join("\n"));
+    const create = gh.findIndex((call) => call.startsWith("pr create --draft --base main --head slices/demo --title demo"));
+    assert.ok(create >= 0, gh.join("\n"));
+    assert.equal(gh.filter((call) => call.startsWith("pr create")).length, 1, gh.join("\n"));
+    assert.ok(gh.some((call) => call.startsWith("label create attention: skim")), gh.join("\n"));
+    assert.ok(gh.some((call) => call.startsWith("pr edit 1 --add-label attention: skim")), gh.join("\n"));
+    assert.ok(gh.findIndex((call) => call.startsWith("pr ready 1")) > create, gh.join("\n"));
+
+    // The first session saw no PR yet, and every later one saw the PR the runner opened.
+    const handed = readFileSync(seen, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(handed.length, 3);
+    assert.equal(handed[0].number, null);
+    assert.equal(handed[0].base, "main");
+    assert.equal(handed[0].head, "slices/demo");
+    assert.equal(handed[1].number, 1);
+    assert.equal(handed[2].body, "## Slices\n\nS1\nS2");
+
+    // Each session is told the runner owns the PR, and to keep off gh and git push.
+    for (const launch of callsTo(calls, "sessionLaunch")) {
+      assert.match(launch.appendSystemPrompt, /never run `git push` or `gh`/);
+      assert.match(launch.appendSystemPrompt, /\.run-feature\/pr\.json/);
+    }
+  });
+
+  it("a session's own gh call is the only one without the App token, so a test can tell it apart", async () => {
+    const fixture = makeFixture(
+      CONTAINER_STUB.replace('  markReady();', '  markReady();\n  execFileSync("gh", ["pr", "view"]);'),
+    );
+    const { ghLog } = await runRunnerWithDaemon(fixture);
+    const sessionCalls = ghCalls(ghLog).filter((call) => call.endsWith("[token none]"));
+    assert.deepEqual(sessionCalls, ["pr view [token none]"]);
+  });
+
+  it("applies only attention labels, and keeps the PR file out of git", async () => {
+    const fixture = makeFixture(
+      CONTAINER_STUB.replace(
+        'labels: ["attention: skim"]',
+        'labels: ["attention: read", "release"]',
+      ),
+    );
+    const { result, ghLog } = await runRunnerWithDaemon(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(ghState(ghLog).pr.labels, ["attention: read"]);
+    assert.deepEqual(ghState(ghLog).labels, ["attention: read"]);
+    const tracked = git(fixture.repo, "ls-tree", "-r", "--name-only", "origin/slices/demo");
+    assert.doesNotMatch(tracked, /\.run-feature/);
+  });
+
+  it("a PR file a session swapped for a link to a host file halts, and posts nothing from it", async () => {
+    const secret = path.join(os.tmpdir(), `run-feature-secret-${process.pid}`);
+    writeFileSync(secret, JSON.stringify({ title: "leak", body: "host secret", draft: true }));
+    const fixture = makeFixture(
+      CONTAINER_STUB.replace(
+        "const slices = JSON.parse(",
+        `require("node:fs").rmSync(".run-feature", { recursive: true, force: true });
+require("node:fs").mkdirSync(".run-feature");
+require("node:fs").symlinkSync(${JSON.stringify(secret)}, ".run-feature/pr.json");
+process.exit(0);
+const slices = JSON.parse(`,
+      ),
+    );
+    try {
+      const { result, ghLog, osaLog } = await runRunnerWithDaemon(fixture);
+      assert.equal(result.status, 2, result.stderr);
+      assert.match(result.stderr, /halt: \.run-feature\/pr\.json in the worktree is not a plain file/);
+      assert.deepEqual(bannerPayloads(osaLog), ["pr refused"]);
+      assert.ok(ghCalls(ghLog).every((call) => !call.startsWith("pr create")));
+      assert.match(readFileSync(secret, "utf8"), /host secret/);
+    } finally {
+      rmSync(secret, { force: true });
+    }
+  });
+
+  it("without a minter, the runner still owns the PR, through the shell's own gh login", () => {
+    const fixture = makeFixture(CONTAINER_STUB);
+    rmSync(path.join(fixture.bin, "github-app-token"));
+    const { result, ghLog } = runRunner(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(ghState(ghLog).pr.isDraft, false);
+    assert.ok(ghCalls(ghLog).every((call) => call.endsWith("[token none]")));
   });
 });

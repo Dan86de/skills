@@ -160,6 +160,7 @@ A skill that reads tries the home first, then the fallbacks, so existing repos k
 | `.claude/settings.json` | yes | run-feature, seeded only when absent | Claude Code | none |
 | `docs/manual/` | yes | make-verify, implement-slice | the verify skill, prove-change | none |
 | `.git/run-feature/<slug>.git` | no | run-feature, deleted on a clean finish | run-feature | none |
+| `.run-feature/pr.json` | no | run-feature and the sessions it runs, deleted on a clean finish | run-feature, implement-slice, pr-brief | none |
 | `.scratch/` | no | verify runs, explore maps, interview trees, recohere reports, prove-change worktrees | the skill that wrote it | none |
 
 Rules:
