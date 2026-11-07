@@ -1,7 +1,8 @@
 // Seam tests for run.mjs: drive the runner's process boundary against a
 // throwaway target repo with a stub harness and gh on PATH.
 // Covers slices S1 through S6 of spec/features/run-feature/spec.md, and the
-// refusal to start sessions on the host without --on-host.
+// refusal to start sessions on the host without --on-host, and the agent
+// account's quota brake.
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -216,18 +217,28 @@ const MANY_SLICES = {
 
 // Stands in for the agents-hq daemon on its real wire: JSON lines over a
 // WebSocket that offers the state dir's token as a subprotocol. It logs every
-// request, runs a launched session as one stub harness process, and then lists
-// the session as exited. A separate process, because the runner blocks in
-// spawnSync while the test holds this end.
+// request with its time, runs a launched session as one stub harness process,
+// and then lists the session as exited. A separate process, because the runner
+// blocks in spawnSync while the test holds this end.
+// FAKE_QUOTA scripts the quota reading on ping: { reading, resetInMs, afterSessions,
+// cutsSession }. The reading appears once afterSessions sessions launched, resetting
+// resetInMs later, and with cutsSession that session ends before its harness runs.
 const FAKE_DAEMON = `
 const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { appendFileSync } = require("node:fs");
 const { createServer } = require("node:http");
 const [logFile, token, contractVersion, failingTag, exitCode] = process.argv.slice(1);
+const quota = process.env.FAKE_QUOTA ? JSON.parse(process.env.FAKE_QUOTA) : undefined;
+let reading;
+const report = () => {
+  reading = { ...quota.reading };
+  if (quota.resetInMs !== null) reading.resetsAt = new Date(Date.now() + quota.resetInMs).toISOString();
+};
+if (quota && !quota.afterSessions) report();
 const sessions = [];
 const answer = (tag, payload) => {
-  if (tag === "ping") return { contractVersion: Number(contractVersion) };
+  if (tag === "ping") return { contractVersion: Number(contractVersion), ...(reading ? { quota: reading } : {}) };
   if (tag === "runStart") return { runId: "run-1" };
   if (tag === "sessionList") {
     return sessions.map((sessionId) => ({ sessionId, state: { _tag: "Exited", exitCode: Number(exitCode) } }));
@@ -235,9 +246,13 @@ const answer = (tag, payload) => {
   if (tag === "sessionLaunch") {
     const sessionId = "session-" + (sessions.length + 1);
     sessions.push(sessionId);
-    try {
-      execFileSync("claude", ["-p", payload.prompt], { cwd: payload.location.path, stdio: "ignore" });
-    } catch {}
+    const reachesQuota = quota !== undefined && sessions.length === quota.afterSessions;
+    if (!(reachesQuota && quota.cutsSession)) {
+      try {
+        execFileSync("claude", ["-p", payload.prompt], { cwd: payload.location.path, stdio: "ignore" });
+      } catch {}
+    }
+    if (reachesQuota) report();
     return { sessionId };
   }
   return null;
@@ -284,7 +299,7 @@ server.on("upgrade", (request, socket) => {
       if (opcode !== 1) continue;
       for (let i = 0; i < body.length; i++) body[i] ^= mask[i % 4];
       const { id, tag, payload } = JSON.parse(body.toString().trim());
-      appendFileSync(logFile, JSON.stringify({ tag, payload }) + "\\n");
+      appendFileSync(logFile, JSON.stringify({ tag, payload, at: Date.now() }) + "\\n");
       if (failingTag === "drop:" + tag) return socket.destroy();
       const exit =
         tag === failingTag
@@ -297,7 +312,7 @@ server.on("upgrade", (request, socket) => {
 server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 `;
 
-async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", exitCode = 0) {
+async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", exitCode = 0, quota = undefined) {
   const stateDir = path.join(fixture.tmp, "state");
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(path.join(stateDir, "token"), "test-token\n");
@@ -314,6 +329,7 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", ex
         PATH: `${fixture.bin}:${process.env.PATH}`,
         STUB_CLAUDE_LOG: claudeLog,
         STUB_GH_LOG: path.join(fixture.tmp, "gh.log"),
+        FAKE_QUOTA: quota === undefined ? "" : JSON.stringify(quota),
       },
     },
   );
@@ -327,8 +343,8 @@ async function startFakeDaemon(fixture, contractVersion = 5, failingTag = "", ex
 
 // One kick against a fake daemon on the given contract, returning what the
 // runner sent it in order.
-async function runRunnerWithDaemon(fixture, { contractVersion, failingTag, exitCode, env, args } = {}) {
-  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag, exitCode);
+async function runRunnerWithDaemon(fixture, { contractVersion, failingTag, exitCode, env, args, quota } = {}) {
+  const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, contractVersion, failingTag, exitCode, quota);
   try {
     const run = runRunner(fixture, { ...daemonEnv, ...env }, args);
     const calls = readFileSync(daemonLog, "utf8")
@@ -1308,6 +1324,128 @@ describe("run.mjs refuses to start sessions outside a container without --on-hos
     assert.match(result.stdout.split("\n")[0], /^\[run-feature\] on host: --on-host given/);
     assert.match(result.stdout, /running outside agents-hq/);
     assert.equal(sessionsIn(claudeLog), 3);
+  });
+});
+
+describe("run.mjs brakes the agent account at 95% of the week and waits out limits", () => {
+  const AGENT = [...ON_HOST, "--agent-account"];
+  const weekAt = (utilization) => ({ window: "seven_day", status: "allowed_warning", utilization });
+  const RESET_MS = 1500;
+  const waits = (calls) => callsTo(calls, "runEnd").filter(({ outcome }) => outcome === "waiting");
+  const launchTimes = (calls) => calls.filter(({ tag }) => tag === "sessionLaunch").map(({ at }) => at);
+  const resetOf = (wait) => Date.parse(wait.detail.match(/reset at (\S+)\.$/)[1]);
+
+  it("at 95% of the week starts no session until the week resets, then finishes", async () => {
+    const fixture = makeFixture();
+    const { result, calls, osaLog } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: weekAt(0.95), resetInMs: RESET_MS },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout.split("\n")[1], /^\[run-feature\] agent account: --agent-account given/);
+    const [wait] = waits(calls);
+    assert.match(wait.detail, /^Waiting for the agent account's 95% weekly reserve to reset at /);
+    assert.ok(launchTimes(calls).every((at) => at >= resetOf(wait)));
+    assert.equal(launchTimes(calls).length, 3);
+    const keys = callsTo(calls, "runStart").map(({ key }) => key);
+    assert.deepEqual(keys, [keys[0], keys[0]]);
+    assert.equal(callsTo(calls, "runEnd").at(-1).outcome, "completed");
+    assert.deepEqual(bannerPayloads(osaLog), ["waiting for quota", "complete"]);
+  });
+
+  it("a session that crosses 95% finishes, and the next one waits for the reset", async () => {
+    const fixture = makeFixture();
+    const { result, calls } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: weekAt(0.96), resetInMs: RESET_MS, afterSessions: 1 },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const [first, ...rest] = launchTimes(calls);
+    const [wait] = waits(calls);
+    assert.ok(first < resetOf(wait));
+    assert.ok(rest.length === 2 && rest.every((at) => at >= resetOf(wait)));
+    assert.deepEqual(landedTrailers(fixture.repo), ["S1", "S2"]);
+  });
+
+  it("shows no step running while it waits, and the plan again once it resumes", async () => {
+    const fixture = makeFixture();
+    const { calls } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: weekAt(0.96), resetInMs: RESET_MS, afterSessions: 1 },
+    });
+    const plans = callsTo(calls, "runSteps").map(({ steps }) => steps.map(({ id, state }) => `${id} ${state}`).join(", "));
+    assert.deepEqual(plans.slice(0, 5), [
+      "S1 pending, S2 pending",
+      "S1 running, S2 pending",
+      "S1 done, S2 pending",
+      "S1 done, S2 running",
+      "S1 done, S2 pending",
+    ]);
+    assert.equal(plans[5], "S1 done, S2 running");
+  });
+
+  it("below 95% the agent account runs straight through", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), {
+      args: AGENT,
+      quota: { reading: weekAt(0.94), resetInMs: 60_000 },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(waits(calls), []);
+  });
+
+  it("a reading whose reset has passed is stale and holds nothing back", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), {
+      args: AGENT,
+      quota: { reading: weekAt(0.99), resetInMs: -1000 },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(waits(calls), []);
+  });
+
+  it("without --agent-account a reading at 95% brakes nothing", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), {
+      quota: { reading: weekAt(0.97), resetInMs: 60_000 },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(waits(calls), []);
+    assert.doesNotMatch(result.stdout, /agent account/);
+  });
+
+  it("a usage limit that cuts a session short is waited out without counting a failed attempt", async () => {
+    const fixture = makeFixture();
+    const { result, calls } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: { window: "five_hour", status: "rejected" }, resetInMs: RESET_MS, afterSessions: 1, cutsSession: true },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(callsTo(calls, "runAttach").map(({ name }) => name), ["S1", "S1", "S2", "Close the branch"]);
+    const [cut] = callsTo(calls, "runSettle");
+    assert.deepEqual(cut, { runId: "run-1", sessionId: "session-1", outcome: "stopped", detail: "Cut short by the five_hour limit." });
+    const [wait] = waits(calls);
+    assert.match(wait.detail, /^Waiting for the five_hour limit to reset at /);
+    assert.ok(launchTimes(calls).slice(1).every((at) => at >= resetOf(wait)));
+  });
+
+  it("a session that fails at the reserve still counts as a failed attempt", async () => {
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), {
+      args: AGENT,
+      quota: { reading: weekAt(0.96), resetInMs: RESET_MS, afterSessions: 1, cutsSession: true },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(callsTo(calls, "runAttach").map(({ name }) => name), ["S1", "S1 retry", "S2", "Close the branch"]);
+    assert.equal(callsTo(calls, "runSettle")[0].outcome, "failed");
+  });
+
+  it("a limit with no reset time halts waiting rather than guess, before any session", async () => {
+    const fixture = makeFixture();
+    const { result, calls } = await runRunnerWithDaemon(fixture, {
+      args: AGENT,
+      quota: { reading: { window: "seven_day", status: "rejected" }, resetInMs: null },
+    });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /the seven_day limit was reached with no reset time; re-kick once it resets/);
+    assert.deepEqual(callsTo(calls, "sessionLaunch"), []);
+    assert.equal(callsTo(calls, "runEnd").at(-1).outcome, "waiting");
   });
 });
 

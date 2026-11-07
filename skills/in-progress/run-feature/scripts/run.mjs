@@ -22,6 +22,13 @@ import { fileURLToPath } from "node:url";
 // One kick never starts a session beyond this ceiling.
 const MAX_ITERATIONS = 12;
 
+// The agent account stops starting sessions here, so 5% of its week is left
+// for a person to log in to that account and debug a stuck run.
+const AGENT_WEEKLY_RESERVE = 0.95;
+const RESERVE_PERCENT = `${AGENT_WEEKLY_RESERVE * 100}%`;
+// A timer can fire a moment early, which would read the reset as still ahead.
+const RESET_MARGIN_MS = 1000;
+
 // The Bash allowlist seeded into a project that has no committed Claude
 // settings yet. The headless sessions skip the permission system entirely;
 // this baseline is for the attended sessions a human runs in a kept worktree.
@@ -105,18 +112,20 @@ function gitOk(repo, args) {
 }
 
 function parseArgs(argv) {
-  const args = { repo: process.cwd(), slug: null, onHost: false };
+  const args = { repo: process.cwd(), slug: null, onHost: false, agentAccount: false };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--repo") {
       args.repo = argv[++i] ?? fail("--repo needs a path");
     } else if (argv[i] === "--on-host") {
       args.onHost = true;
+    } else if (argv[i] === "--agent-account") {
+      args.agentAccount = true;
     } else {
       rest.push(argv[i]);
     }
   }
-  if (rest.length !== 1) fail("usage: node run.mjs <slug> [--repo <path>] [--on-host]");
+  if (rest.length !== 1) fail("usage: node run.mjs <slug> [--repo <path>] [--on-host] [--agent-account]");
   args.slug = rest[0];
   if (!/^[a-z0-9-]+$/.test(args.slug)) fail(`slug "${args.slug}" is not lowercase kebab-case`);
   args.repo = path.resolve(args.repo);
@@ -409,9 +418,9 @@ const DAEMON_LOST = 1;
 const DAEMON_UNAVAILABLE = 3;
 const DAEMON_ENDED_BY_SOMEONE_ELSE = 4;
 
-// What the Runs page knows of this kick: the run it shows and the end state recorded
-// when the process exits.
-const board = { runId: "", outcome: "failed", detail: undefined, lastSteps: "" };
+// What the Runs page knows of this kick: the run it shows, the call that opens it, and
+// the end state recorded when the process exits.
+const board = { runId: "", open: [], outcome: "failed", detail: undefined, lastSteps: "" };
 
 function daemonCall(...args) {
   return spawnSync(process.execPath, [DAEMON_SESSION, ...args], {
@@ -433,14 +442,12 @@ function waitFor(command, args, options) {
 // The key makes every kick of this feature in this repo reopen one run, so its
 // cost and time stay whole. The name is the slug, which the card shows.
 function startRun(repo, slug) {
-  const key = `${realpathSync(repo)}:${slug}`;
-  board.runId = daemonCall("run-start", slug, `Run the ${slug} feature to a ready PR`, key).stdout?.trim() ?? "";
+  board.open = ["run-start", slug, `Run the ${slug} feature to a ready PR`, `${realpathSync(repo)}:${slug}`];
+  board.runId = daemonCall(...board.open).stdout?.trim() ?? "";
   if (board.runId === "") return;
   process.on("exit", () => {
     // No session outlives the kick on purpose, so no step should read as running.
-    if (board.lastSteps !== "") {
-      reportSteps(JSON.parse(board.lastSteps).map((step) => (step.state === "running" ? { ...step, state: "pending" } : step)));
-    }
+    reportSteps(stepsAtRest());
     daemonCall("run-end", board.runId, board.outcome, board.detail ?? "");
   });
   for (const signal of ["SIGTERM", "SIGINT"]) {
@@ -464,10 +471,16 @@ function planSteps(slices, { done, pending }, { running, failed } = {}) {
   return slices.map((slice) => ({ id: slice.id, title: slice.title ?? slice.id, state: state(slice) }));
 }
 
+// The plan last sent, with no step running, for while no session is.
+function stepsAtRest() {
+  if (board.lastSteps === "") return [];
+  return JSON.parse(board.lastSteps).map((step) => (step.state === "running" ? { ...step, state: "pending" } : step));
+}
+
 // The daemon takes the plan whole, so only a change is worth a call.
 function reportSteps(steps) {
   const sent = JSON.stringify(steps);
-  if (board.runId === "" || sent === board.lastSteps) return;
+  if (board.runId === "" || steps.length === 0 || sent === board.lastSteps) return;
   board.lastSteps = sent;
   daemonCall("run-steps", board.runId, sent);
 }
@@ -475,6 +488,60 @@ function reportSteps(steps) {
 function settleSession(sessionId, outcome, detail) {
   if (board.runId === "" || sessionId === undefined) return;
   daemonCall("run-settle", board.runId, sessionId, outcome, detail ?? "");
+}
+
+// The daemon's latest rate-limit reading, or undefined when no daemon has one.
+function readQuota() {
+  const printed = daemonCall("quota").stdout?.trim() ?? "";
+  if (printed === "") return undefined;
+  try {
+    return JSON.parse(printed);
+  } catch {
+    return undefined;
+  }
+}
+
+// What holds the agent account's sessions back, or null. The daemon only learns
+// a new reading from a session, so a reading whose reset has passed is stale.
+function quotaHold(reading) {
+  if (reading === undefined) return null;
+  const limited = reading.status === "rejected";
+  const reserved = reading.window === "seven_day" && (reading.utilization ?? 0) >= AGENT_WEEKLY_RESERVE;
+  if (!limited && !reserved) return null;
+  const resetsAt = reading.resetsAt === undefined ? undefined : Date.parse(reading.resetsAt);
+  if (resetsAt !== undefined && resetsAt <= Date.now()) return null;
+  return {
+    what: limited ? `the ${reading.window ?? "usage"} limit` : `the agent account's ${RESERVE_PERCENT} weekly reserve`,
+    limited,
+    resetsAt,
+  };
+}
+
+// Starts no session while the agent account is held back: the run reads waiting
+// with the reset time, one banner fires, and the run reopens once it resets.
+async function waitOutQuota(worktree) {
+  for (let hold = quotaHold(readQuota()); hold !== null; hold = quotaHold(readQuota())) {
+    if (hold.resetsAt === undefined) {
+      halt("quota reached", `${hold.what} was reached with no reset time; re-kick once it resets`, worktree, {
+        outcome: "waiting",
+      });
+    }
+    const resetTime = new Date(hold.resetsAt).toISOString();
+    const detail = `Waiting for ${hold.what} to reset at ${resetTime}.`;
+    log(`quota: ${detail}`);
+    const plan = board.lastSteps;
+    if (board.runId !== "") {
+      reportSteps(stepsAtRest());
+      daemonCall("run-end", board.runId, "waiting", detail);
+    }
+    notify("waiting for quota");
+    await new Promise((resolve) => setTimeout(resolve, hold.resetsAt - Date.now() + RESET_MARGIN_MS));
+    log(`quota: ${hold.what} reset, resuming`);
+    if (board.runId !== "") {
+      daemonCall(...board.open);
+      if (plan !== "") reportSteps(JSON.parse(plan));
+    }
+  }
 }
 
 // Through the local agents-hq daemon when one can take it, so it shows on the Runs page and
@@ -573,7 +640,7 @@ async function runPreStep({ worktree, slug, file, prompt, session, hasOrigin }) 
 }
 
 async function main() {
-  const { repo, slug, onHost } = parseArgs(process.argv.slice(2));
+  const { repo, slug, onHost, agentAccount } = parseArgs(process.argv.slice(2));
   // No session starts in a container yet.
   if (!onHost) {
     fail(
@@ -581,6 +648,9 @@ async function main() {
     );
   }
   log("on host: --on-host given, so every session runs outside a container, with full access");
+  if (agentAccount) {
+    log(`agent account: --agent-account given, so no session starts at ${RESERVE_PERCENT} of the week or at a usage limit until it resets`);
+  }
   if (!gitOk(repo, ["rev-parse", "--git-dir"])) fail(`${repo} is not a git repository`);
 
   const branch = defaultBranch(repo);
@@ -621,7 +691,10 @@ async function main() {
 
   ensureSettings(worktree, hasOrigin);
 
-  const session = (prompt, label, member) => runHarnessSession({ worktree, prompt, label, ...member });
+  const session = async (prompt, label, member) => {
+    if (agentAccount) await waitOutQuota(worktree);
+    return runHarnessSession({ worktree, prompt, label, ...member });
+  };
 
   const featureDir = path.join(worktree, "spec", "features", slug);
   if (!existsSync(path.join(featureDir, "spec.md")) && !existsSync(path.join(featureDir, "decisions.md"))) {
@@ -727,6 +800,14 @@ async function main() {
     // done still counts even though the combined count stays constant.
     const after = sliceStates(worktree, base, slices);
     const progressed = after.done.size > states.done.size || after.pending.size > states.pending.size;
+    // The reserve only holds back the next session; a limit is what cuts one short.
+    const cutShort = !progressed && agentAccount ? quotaHold(readQuota()) : null;
+    if (cutShort?.limited && git(worktree, ["status", "--porcelain"]) === "") {
+      // A usage limit is no failed attempt: the next session waits it out instead.
+      settleSession(sessionId, "stopped", `Cut short by ${cutShort.what}.`);
+      log(`iteration ${iteration} was cut short by ${cutShort.what}; not counted as a failure`);
+      continue;
+    }
     settleSession(
       sessionId,
       progressed ? "completed" : "failed",
