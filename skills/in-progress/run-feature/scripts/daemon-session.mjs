@@ -2,13 +2,16 @@
 // Runs one headless session through the local agents-hq daemon, so it shows in
 // agents-hq, and returns once its turn is over and the session is ended.
 // Usage: daemon-session.mjs run-start <name> <task> <key>      prints the run id, or nothing
+//        daemon-session.mjs session-stop <run-id> <session-id> <detail>
 //        daemon-session.mjs run-steps <run-id> <steps-json>
 //        daemon-session.mjs run-settle <run-id> <session-id> <outcome> [detail]
 //        daemon-session.mjs run-end <run-id> <outcome> [detail]
 //        daemon-session.mjs quota                                prints the latest rate-limit reading as JSON, or nothing
 //        daemon-session.mjs session <cwd> <prompt> <system-prompt-note> <name> <task> <result-file> [run-id] [parent-session-id] [step-id]
 // A session writes its id to <result-file>, then the run shows it live.
-// run-start names the session it was kicked from, AGENTS_HQ_SESSION_ID, as the run's launcher.
+// run-start names the session it was kicked from, AGENTS_HQ_SESSION_ID, as the run's launcher,
+// and stops any member a kick that died left unsettled.
+// session-stop ends a member's session if it is still live and settles it stopped.
 // Exit codes: 0 done, 1 lost mid-run, 3 no daemon that can run it was found and
 // nothing was launched, so the caller should run it another way, 4 ended by
 // someone else through the daemon, usually a person in agents-hq.
@@ -147,12 +150,44 @@ async function runSession(args) {
   }
 }
 
+// Ends the session unless it already exited; a session the daemon no longer
+// lists has nothing left to end.
+async function endSession(client, sessionId) {
+  const sessions = await client.call("sessionList", {});
+  const state = sessions.find((session) => session.sessionId === sessionId)?.state;
+  if (state === undefined || state._tag === "Exited") return;
+  await client.call("sessionKill", { sessionId });
+  log(`ended session ${sessionId}`);
+}
+
+async function stopMember(client, runId, sessionId, detail) {
+  await endSession(client, sessionId);
+  await client.call("runSettle", { runId, sessionId, outcome: "stopped", detail });
+}
+
+// Every member settles before its kick goes on, so one still unsettled when a
+// kick starts belongs to a kick that died mid-session, often by SIGKILL, which
+// no handler sees. Its session may still be working in the worktree this kick
+// is about to use, so it is ended before it is settled.
+const ORPHAN_DETAIL = "The kick running it died before it settled; the next kick stopped it.";
+
+async function stopOrphans(client, run) {
+  for (const member of run.members ?? []) {
+    if (member.outcome !== undefined) continue;
+    log(`stopping ${member.sessionId} ("${member.name}"), left unsettled by a kick that died`);
+    await stopMember(client, run.runId, member.sessionId, ORPHAN_DETAIL).catch((error) =>
+      log(`could not stop ${member.sessionId}: ${error.message}`),
+    );
+  }
+}
+
 // A run is decoration on the sessions, so a daemon that cannot show one costs nothing.
-async function runCall(tag, payload, print) {
+async function runCall(tag, payload, print, after) {
   const client = await availableDaemon();
   if (client === null) return;
   try {
     const value = await client.call(tag, payload);
+    if (after) await after(client, value);
     if (print) process.stdout.write(print(value));
   } catch (error) {
     log(`${tag} failed: ${error.message}`);
@@ -166,7 +201,20 @@ async function main() {
   if (command === "run-start") {
     const [name, task, key] = args;
     const launcherSessionId = process.env.AGENTS_HQ_SESSION_ID;
-    return runCall("runStart", { name, task, key, ...(launcherSessionId ? { launcherSessionId } : {}) }, (run) => run.runId);
+    return runCall("runStart", { name, task, key, ...(launcherSessionId ? { launcherSessionId } : {}) }, (run) => run.runId, stopOrphans);
+  }
+  if (command === "session-stop") {
+    const [runId, sessionId, detail] = args;
+    const client = await availableDaemon();
+    if (client === null) return;
+    try {
+      if (runId) await stopMember(client, runId, sessionId, detail);
+      else await endSession(client, sessionId);
+    } catch (error) {
+      log(`session-stop failed: ${error.message}`);
+    }
+    client.close();
+    return;
   }
   if (command === "run-steps") {
     const [runId, steps] = args;

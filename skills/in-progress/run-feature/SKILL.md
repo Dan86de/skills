@@ -67,6 +67,8 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
   A close whose newest `Address review` commit carries a `Known-Failure:` trailer is a `known failure` halt instead: a proven bug it could not fix, left in a draft PR for a person.
 - A kept worktree from a halted run is resumed by typing the same command again once its tree is committed or clean; nothing resumes on its own, and a foreign directory at the worktree path refuses.
 - A session the daemon loses halts as `session lost` and one ended in agents-hq halts as `session ended`, with no retry for either: a lost session may still be working in the worktree, and a person who ended one wants the kick to stop.
+- A kick stopped by SIGTERM, SIGINT or SIGHUP ends the session it was running and settles that session `stopped` with the signal's name before the run ends, since nothing would push its work or settle it afterwards.
+- A kick killed in a way it cannot catch, such as SIGKILL or a shell's background time limit, leaves its session unsettled; the next kick of the feature ends that session if it is still live and settles it `stopped` before starting any session of its own.
 - A ready `hitl` slice, one needing an action only a person can take, runs only once no ready `afk` slice is left, so the unattended work lands first.
 - A failed iteration gets one retry; the same slice failing twice in a row halts, as does the 12-session ceiling per kick and a pending `hitl` slice with nothing else ready.
 - A session that commits nothing and leaves uncommitted changes stopped for the user to decide, so it halts as `slice stopped` with no retry, which would only meet the dirty tree.

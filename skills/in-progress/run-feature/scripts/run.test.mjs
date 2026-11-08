@@ -281,6 +281,9 @@ const MANY_SLICES = {
 // FAKE_QUOTA scripts the quota reading on ping: { reading, resetInMs, afterSessions,
 // cutsSession }. The reading appears once afterSessions sessions launched, resetting
 // resetInMs later, and with cutsSession that session ends before its harness runs.
+// FAKE_RUN is the run runStart answers with, such as one holding a member a dead
+// kick left unsettled; FAKE_LIVE lists sessions already running. With FAKE_HOLD a
+// launched session runs no harness and stays working until sessionKill ends it.
 const FAKE_DAEMON = `
 const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
@@ -294,17 +297,32 @@ const report = () => {
   if (quota.resetInMs !== null) reading.resetsAt = new Date(Date.now() + quota.resetInMs).toISOString();
 };
 if (quota && !quota.afterSessions) report();
-const sessions = [];
+const run = process.env.FAKE_RUN ? JSON.parse(process.env.FAKE_RUN) : { runId: "run-1" };
+const hold = process.env.FAKE_HOLD === "1";
+// Each session's state: live, exited or killed.
+const sessions = new Map((process.env.FAKE_LIVE || "").split(",").filter(Boolean).map((id) => [id, "live"]));
+let launched = 0;
 const answer = (tag, payload) => {
   if (tag === "ping") return { contractVersion: Number(contractVersion), ...(reading ? { quota: reading } : {}) };
-  if (tag === "runStart") return { runId: "run-1" };
+  if (tag === "runStart") return run;
   if (tag === "sessionList") {
-    return sessions.map((sessionId) => ({ sessionId, state: { _tag: "Exited", exitCode: Number(exitCode) } }));
+    return [...sessions].map(([sessionId, state]) => ({
+      sessionId,
+      state:
+        state === "live"
+          ? { _tag: "Running", activity: "working" }
+          : { _tag: "Exited", exitCode: state === "killed" ? 143 : Number(exitCode) },
+    }));
+  }
+  if (tag === "sessionKill") {
+    sessions.set(payload.sessionId, "killed");
+    return null;
   }
   if (tag === "sessionLaunch") {
-    const sessionId = "session-" + (sessions.length + 1);
-    sessions.push(sessionId);
-    const reachesQuota = quota !== undefined && sessions.length === quota.afterSessions;
+    const sessionId = "session-" + ++launched;
+    sessions.set(sessionId, hold ? "live" : "exited");
+    if (hold) return { sessionId };
+    const reachesQuota = quota !== undefined && launched === quota.afterSessions;
     if (!(reachesQuota && quota.cutsSession)) {
       try {
         execFileSync("claude", ["-p", payload.prompt], { cwd: payload.location.path, stdio: "ignore" });
@@ -1345,6 +1363,77 @@ describe("run.mjs reports the plan and the halts to the run progress card", () =
     } finally {
       stop();
     }
+  });
+
+  it("a signal mid-session ends that session and settles its slice stopped", async () => {
+    const fixture = makeFixture();
+    const { daemonEnv, daemonLog, stop } = await startFakeDaemon(fixture, { env: { FAKE_HOLD: "1" } });
+    const calls = () =>
+      readFileSync(daemonLog, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    try {
+      const runner = spawn("node", [RUNNER, ...ON_HOST], {
+        cwd: fixture.repo,
+        stdio: "ignore",
+        env: {
+          ...process.env,
+          ...daemonEnv,
+          AGENTS_HQ_SESSION_ID: undefined,
+          PATH: `${fixture.bin}:${process.env.PATH}`,
+          STUB_GH_LOG: path.join(fixture.tmp, "gh.log"),
+          STUB_MINTER_LOG: path.join(fixture.tmp, "minter.log"),
+        },
+      });
+      let ended = false;
+      const exited = new Promise((resolve) => runner.once("exit", resolve)).finally(() => (ended = true));
+      // The member is attached once the session id is written, so the kick knows it.
+      while (!calls().some(({ tag }) => tag === "runAttach")) {
+        assert.ok(!ended, "the runner exited before attaching a session");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      runner.kill("SIGTERM");
+      assert.equal(await exited, 2);
+      const log = calls();
+      assert.deepEqual(callsTo(log, "sessionKill"), [{ sessionId: "session-1" }]);
+      assert.deepEqual(callsTo(log, "runSettle"), [
+        { runId: "run-1", sessionId: "session-1", outcome: "stopped", detail: "The run received SIGTERM." },
+      ]);
+      const tags = log.map(({ tag }) => tag);
+      assert.ok(tags.lastIndexOf("runSettle") < tags.lastIndexOf("runEnd"), "the member settles before the run ends");
+      const steps = callsTo(log, "runSteps").at(-1).steps;
+      assert.ok(steps.every(({ state }) => state !== "running"), "no step reads as running after the kick");
+    } finally {
+      stop();
+    }
+  });
+
+  it("a re-kick ends and settles stopped a member a dead kick left unsettled", async () => {
+    const run = {
+      runId: "run-1",
+      members: [
+        { sessionId: "old-done", name: "S4", task: "Slice 4", stepId: "S4", outcome: "completed" },
+        { sessionId: "old-live", name: "S5", task: "Slice 5", stepId: "S5" },
+        { sessionId: "old-gone", name: "S6", task: "Slice 6", stepId: "S6" },
+      ],
+    };
+    const { result, calls } = await runRunnerWithDaemon(makeFixture(), {
+      env: { FAKE_RUN: JSON.stringify(run), FAKE_LIVE: "old-done,old-live" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(callsTo(calls, "sessionKill"), [{ sessionId: "old-live" }]);
+    const detail = "The kick running it died before it settled; the next kick stopped it.";
+    const orphans = callsTo(calls, "runSettle").filter(({ sessionId }) => sessionId.startsWith("old-"));
+    assert.deepEqual(orphans, [
+      { runId: "run-1", sessionId: "old-live", outcome: "stopped", detail },
+      { runId: "run-1", sessionId: "old-gone", outcome: "stopped", detail },
+    ]);
+    const lastOrphan = calls.findLastIndex(({ tag, payload }) => tag === "runSettle" && payload.sessionId.startsWith("old-"));
+    assert.ok(
+      lastOrphan < calls.findIndex(({ tag }) => tag === "sessionLaunch"),
+      "orphans settle before the first new session",
+    );
   });
 
   it("a clean finish ends the run completed with no leftover reason", async () => {
