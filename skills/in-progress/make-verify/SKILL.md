@@ -66,7 +66,7 @@ The skill points at the map and never copies it.
 Edit existing files:
 
 - Add to the project's agent instructions: a change the map describes is done only when a verify run's `evidence.md` has no failed check, and the map changes in the same PR as the behaviour.
-- If `.claude/skills` is missing, commit it as a symlink to `../.agents/skills`.
+- Make Claude Code find the skill: if `.claude/skills` is missing, commit it as a symlink to `../.agents/skills`; if it is a real folder, commit `.claude/skills/verify` as a symlink to `../../.agents/skills/verify` instead.
 - Ignore `.scratch/`.
 
 ## 5. Prove it
