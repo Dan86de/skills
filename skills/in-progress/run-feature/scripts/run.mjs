@@ -655,7 +655,8 @@ const DAEMON_ENDED_BY_SOMEONE_ELSE = 4;
 
 // What the Runs page knows of this kick: the run it shows, the call that opens it, and
 // the end state recorded when the process exits.
-const board = { runId: "", open: [], outcome: "failed", detail: undefined, lastSteps: "" };
+// sessionFile is where the session now running writes its id, set only while one runs.
+const board = { runId: "", open: [], outcome: "failed", detail: undefined, lastSteps: "", sessionFile: undefined };
 
 function daemonCall(...args) {
   return spawnSync(process.execPath, [DAEMON_SESSION, ...args], {
@@ -678,20 +679,32 @@ function waitFor(command, args, options) {
 // cost and time stay whole. The name is the slug, which the card shows.
 function startRun(repo, slug) {
   board.open = ["run-start", slug, `Run the ${slug} feature to a ready PR`, `${realpathSync(repo)}:${slug}`];
+  // A member a killed kick left unsettled, such as its last slice, is stopped here.
   board.runId = daemonCall(...board.open).stdout?.trim() ?? "";
+  // The session's process may outlive the kick's even with no run to show it in.
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+    process.on(signal, () => {
+      board.outcome = "stopped";
+      board.detail = `The run received ${signal}.`;
+      stopLiveSession(board.detail);
+      process.exit(2);
+    });
+  }
   if (board.runId === "") return;
   process.on("exit", () => {
     // No session outlives the kick on purpose, so no step should read as running.
     reportSteps(stepsAtRest());
     daemonCall("run-end", board.runId, board.outcome, board.detail ?? "");
   });
-  for (const signal of ["SIGTERM", "SIGINT"]) {
-    process.on(signal, () => {
-      board.outcome = "stopped";
-      board.detail = `The run received ${signal}.`;
-      process.exit(2);
-    });
-  }
+}
+
+// A kick stopped mid-session ends that session, since nothing would push its
+// work or settle it, and records its member as stopped with the reason.
+function stopLiveSession(detail) {
+  const file = board.sessionFile;
+  if (file === undefined || !existsSync(file)) return;
+  const sessionId = readFileSync(file, "utf8").trim();
+  if (sessionId !== "") daemonCall("session-stop", board.runId, sessionId, detail);
 }
 
 // The plan as git has it, plus what this kick knows and git cannot say yet: the
@@ -784,6 +797,7 @@ async function waitOutQuota(worktree) {
 async function runHarnessSession({ worktree, prompt, note, label, name, task, parent, stepId }) {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "run-feature-"));
   const resultFile = path.join(scratch, "session-id");
+  board.sessionFile = resultFile;
   const viaDaemon = await waitFor(
     process.execPath,
     [
@@ -802,6 +816,7 @@ async function runHarnessSession({ worktree, prompt, note, label, name, task, pa
     { stdio: ["ignore", "inherit", "inherit"] },
   );
   const sessionId = existsSync(resultFile) ? readFileSync(resultFile, "utf8") : undefined;
+  board.sessionFile = undefined;
   rmSync(scratch, { recursive: true, force: true });
   // Both halt rather than retry. A lost session may still be working in this
   // worktree, and a person who ended one wants the kick to stop.
