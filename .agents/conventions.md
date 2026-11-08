@@ -151,7 +151,7 @@ A skill that reads tries the home first, then the fallbacks, so existing repos k
 | `CLAUDE.md` | yes | the user | review-change, prove-change, Claude Code | none |
 | `.gitignore` (the `.scratch/` line) | yes | the user | git | none |
 | `spec/vision.md` | yes | the user | interview, write-spec | none |
-| `spec/glossary.md` | yes | the user | interview, write-spec, review-change, pr-brief, recohere | `GLOSSARY.md`, `CONTEXT.md` |
+| `spec/glossary.md` | yes | the user, and interview adds the terms a session coins | interview, write-spec, review-change, pr-brief, recohere | `GLOSSARY.md`, `CONTEXT.md` |
 | `spec/features/<slug>/decisions.md` | yes | interview | write-spec | none |
 | `spec/features/<slug>/spec.md` | yes | write-spec | write-slices, implement-slice, pr-brief, prove-change | none |
 | `spec/features/<slug>/slices.json` | yes | write-slices | implement-slice | none |
@@ -170,6 +170,7 @@ Rules:
 - `.scratch/` holds what a run produced, git-ignored and safe to delete.
 - Git trailers stay the source of truth for progress; no skill writes state into `spec/`.
 - `<slug>` is lowercase kebab-case, one per feature, and names the feature folder and the branch `slices/<slug>`.
-- Skills never write `spec/vision.md` or `spec/glossary.md`: they are the user's, and a skill proposes changes in its reply.
+- Skills never write `spec/vision.md`: it is the user's, and a skill proposes changes in its reply.
+- Only interview writes `spec/glossary.md`, adding the terms a confirmed session coined and rewriting a term already there instead of defining it twice; any other skill proposes glossary changes in its reply.
 - A skill never invents a new top-level path; add it to this table first.
 - `CLAUDE.md` imports `AGENTS.md` with `@AGENTS.md`, because Claude Code does not read `AGENTS.md` on its own.
