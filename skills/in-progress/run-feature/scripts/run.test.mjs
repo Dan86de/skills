@@ -26,6 +26,13 @@ import { before, describe, it } from "node:test";
 
 const RUNNER = fileURLToPath(new URL("./run.mjs", import.meta.url));
 
+// The gh stub logs whichever token reaches it, so a token the shell exports
+// would read as the App's or hide a call made without one. Every child here
+// inherits process.env, so the tests start from a shell with no GitHub token.
+for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]) {
+  delete process.env[name];
+}
+
 function git(repo, ...args) {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
 }
@@ -450,7 +457,8 @@ function makeFixture(claudeStub = CLAUDE_STUB, slices = SLICES, opts = {}) {
   if (origin) {
     const originDir = path.join(tmp, "origin.git");
     execFileSync("git", ["init", "--bare", "--quiet", "-b", "main", originDir]);
-    execFileSync("git", ["clone", "--quiet", originDir, repo]);
+    // Cloning an empty origin warns even with --quiet; a failure still throws with its stderr.
+    execFileSync("git", ["clone", "--quiet", originDir, repo], { stdio: "pipe" });
   } else {
     execFileSync("git", ["init", "--quiet", "-b", "main", repo]);
   }
