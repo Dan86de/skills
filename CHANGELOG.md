@@ -1,5 +1,12 @@
 # dan86de-skills
 
+## 0.16.7
+
+### Patch Changes
+
+- [#56](https://github.com/Dan86de/skills/pull/56) [`9196801`](https://github.com/Dan86de/skills/commit/919680133c7d1f38633bc6b2da42eb9e47c18235) Thanks [@Dan86de](https://github.com/Dan86de)! - make-verify now links the verify skill into an existing `.claude/skills` folder, so Claude Code finds it in projects that already have project skills.
+  The file contract now says interview is the one skill that adds terms to `spec/glossary.md`, matching what interview does.
+
 ## 0.16.6
 
 ### Patch Changes
