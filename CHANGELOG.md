@@ -1,5 +1,11 @@
 # dan86de-skills
 
+## 0.16.6
+
+### Patch Changes
+
+- [#54](https://github.com/Dan86de/skills/pull/54) [`2eb25bd`](https://github.com/Dan86de/skills/commit/2eb25bdadaf2cb1ecc2f34fffae5841ad189f3de) Thanks [@Dan86de](https://github.com/Dan86de)! - `run-feature` no longer leaves a slice's session open when its kick dies: a kick stopped by SIGTERM, SIGINT or SIGHUP ends the session it was running and settles it `stopped`, and the next kick of the feature ends and settles any session a kick killed outright left behind before it starts its own.
+
 ## 0.16.5
 
 ### Patch Changes
