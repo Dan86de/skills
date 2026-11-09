@@ -1,5 +1,11 @@
 # dan86de-skills
 
+## 0.16.8
+
+### Patch Changes
+
+- [#60](https://github.com/Dan86de/skills/pull/60) [`7d4c189`](https://github.com/Dan86de/skills/commit/7d4c189e470c854079a6aa0991291467fdf0b2f0) Thanks [@Dan86de](https://github.com/Dan86de)! - run-feature's headless note now tells each session to stop every Monitor and background command it started before its final turn ends, so a leftover watcher no longer holds a finished slice open until it expires.
+
 ## 0.16.7
 
 ### Patch Changes
