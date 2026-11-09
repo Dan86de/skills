@@ -57,6 +57,7 @@ The loop is `scripts/run.mjs`, which sits next to this file: a zero-dependency N
 - Reports the whole plan to the run on every state change, from the first moment the slices file exists, and links each slice session to its slice; a session that is not a slice (writing the spec or slices, closing the branch) has no link.
 - Ends the run with an outcome the card can read: `waiting` when a sign-off or a stopped slice halts it or the close commits a known failure, `stopped` with `re-kick to continue` at the session ceiling, `failed` when a slice fails twice in a row, `stopped` with the reason for any other halt, `failed` for a bad-input or environment exit, and `completed` on a clean finish.
 - Appends a headless note to every session's system prompt, so a skill that would end its turn asking a question settles the choice with its own default instead of stalling the run.
+  The note also has the session stop every Monitor and background command it started before its final turn ends, since the run only moves on once nothing of the session still runs.
 - Refuses the kick readably when `slices/<slug>` is already checked out somewhere, naming the checkout to switch, instead of failing inside `git worktree add`.
 - Between iterations it decides from `git log` trailers and `slices.json` alone, never from session stdout.
 - A slice with only `done.manual` items is `afk`: it commits as done, so its dependents and the close carry on, and its checks wait for a person in the ready PR's `## Before you merge`.
