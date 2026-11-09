@@ -628,6 +628,7 @@ describe("run.mjs loops slices to a ready PR in a worktree", () => {
         args[4].includes("Never end the turn asking a question or waiting for input"),
         args[4],
       );
+      assert.ok(args[4].includes("stop every Monitor and background command you started"), args[4]);
     }
   });
 

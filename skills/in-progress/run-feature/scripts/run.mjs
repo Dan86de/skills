@@ -631,11 +631,15 @@ function quoteArg(arg) {
 
 // Appended to every session's system prompt: a skill that would end its turn
 // asking a question (write-slices did, on granularity) stalls a headless run,
-// so each session is told to settle open choices itself.
+// so each session is told to settle open choices itself. A watcher left armed
+// after the work is done reads as working until it expires, and once held a
+// finished slice open for 24 minutes.
 const HEADLESS_NOTE =
   "This session runs headlessly inside a run-feature run: no human can answer mid-run. " +
   "Never end the turn asking a question or waiting for input; " +
-  "settle every open choice with the default you would otherwise propose, note it, and finish the task.";
+  "settle every open choice with the default you would otherwise propose, note it, and finish the task. " +
+  "Before your final turn ends, stop every Monitor and background command you started: " +
+  "the run moves on only once nothing of this session is still running, so a leftover one stalls it until it expires.";
 
 // Appended after the headless note: the session pushes nothing and touches the
 // PR only through the PR file, which the runner applies as the GitHub App.
