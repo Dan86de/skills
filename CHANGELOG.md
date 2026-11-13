@@ -1,5 +1,11 @@
 # dan86de-skills
 
+## 0.16.9
+
+### Patch Changes
+
+- [#62](https://github.com/Dan86de/skills/pull/62) [`629a68a`](https://github.com/Dan86de/skills/commit/629a68ab2a750ea3a3b1472730a503ba4bd419cd) Thanks [@Dan86de](https://github.com/Dan86de)! - run-feature now runs every session on `claude-opus-5-5`, through agents-hq and through the `claude -p` fallback alike, instead of whatever the harness default happens to be.
+
 ## 0.16.8
 
 ### Patch Changes
