@@ -629,6 +629,7 @@ describe("run.mjs loops slices to a ready PR in a worktree", () => {
         args[4],
       );
       assert.ok(args[4].includes("stop every Monitor and background command you started"), args[4]);
+      assert.deepEqual(args.slice(5), ["--model", "claude-opus-5-5"]);
     }
   });
 
@@ -1103,6 +1104,7 @@ describe("run.mjs puts the kick on the agents-hq Runs page", () => {
     const { calls } = await runRunnerWithDaemon(makeFixture());
     const [launch] = callsTo(calls, "sessionLaunch");
     assert.equal(launch.permissionMode, "full-access");
+    assert.equal(launch.model, "claude-opus-5-5");
     assert.match(launch.appendSystemPrompt, /no human can answer/);
     assert.deepEqual(callsTo(calls, "runEnd"), [{ runId: "run-1", outcome: "completed" }]);
   });
