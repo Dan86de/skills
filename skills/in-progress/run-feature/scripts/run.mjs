@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { SESSION_MODEL } from "./session-model.mjs";
 
 // One kick never starts a session beyond this ceiling.
 const MAX_ITERATIONS = 12;
@@ -851,7 +852,15 @@ async function runHarnessSession({ worktree, prompt, note, label, name, task, pa
 // allowlist. stdout and stderr stream straight to the terminal and are never
 // captured.
 async function runClaudeSession({ worktree, prompt, note, label }) {
-  const args = ["-p", prompt, "--dangerously-skip-permissions", "--append-system-prompt", note];
+  const args = [
+    "-p",
+    prompt,
+    "--dangerously-skip-permissions",
+    "--append-system-prompt",
+    note,
+    "--model",
+    SESSION_MODEL,
+  ];
   log(`${label}: claude ${args.map(quoteArg).join(" ")}`);
   const result = await waitFor("claude", args, {
     cwd: worktree,

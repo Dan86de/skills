@@ -20,6 +20,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { SESSION_MODEL } from "./session-model.mjs";
 import { settleWatch } from "./settle-watch.mjs";
 
 // The first contract version with a run's key and steps, a member's stepId and the waiting outcome.
@@ -106,6 +107,7 @@ async function runSession(args) {
   const { sessionId } = await client.call("sessionLaunch", {
     prompt,
     location: { _tag: "Directory", path: cwd },
+    model: SESSION_MODEL,
     permissionMode: "full-access",
     appendSystemPrompt: note,
   });
